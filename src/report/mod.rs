@@ -1,3 +1,5 @@
+pub mod html;
+
 use std::collections::BTreeSet;
 
 use anyhow::{ensure, Result};
@@ -134,25 +136,34 @@ fn analyze_gpu(samples: &[Sample], offsets: &[u64], interval: u64) -> Option<Gpu
     })
 }
 
-fn analyze_cpu(samples: &[Sample], offsets: &[u64], interval: u64) -> CpuSummary {
-    let max_core = |s: &Sample| s.cpu.per_core_mhz.iter().copied().max().unwrap_or(0);
+fn max_core(s: &Sample) -> u64 {
+    s.cpu.per_core_mhz.iter().copied().max().unwrap_or(0)
+}
 
+/// Per-sample CPU throttle flags, shared by the text summary and the HTML
+/// chart shading so the heuristic lives in one place.
+pub(crate) fn cpu_throttle_flags(samples: &[Sample]) -> Option<(u64, Vec<bool>)> {
     let mut loaded_clocks: Vec<u64> = samples
         .iter()
         .filter(|s| s.cpu.usage_pct > BASELINE_LOAD_PCT)
         .map(max_core)
         .collect();
-
-    let throttle = (!loaded_clocks.is_empty()).then(|| {
+    (!loaded_clocks.is_empty()).then(|| {
         loaded_clocks.sort_unstable();
         // 90th percentile rather than max, so one boost spike doesn't set an
         // unreachable baseline.
         let baseline = loaded_clocks[(loaded_clocks.len() - 1) * 9 / 10];
         let threshold = baseline as f64 * DROP_RATIO;
-        let flags: Vec<bool> = samples
+        let flags = samples
             .iter()
             .map(|s| s.cpu.usage_pct > LOAD_PCT && (max_core(s) as f64) < threshold)
             .collect();
+        (baseline, flags)
+    })
+}
+
+fn analyze_cpu(samples: &[Sample], offsets: &[u64], interval: u64) -> CpuSummary {
+    let throttle = cpu_throttle_flags(samples).map(|(baseline, flags)| {
         let runs = episodes(&flags);
         CpuThrottle {
             baseline_mhz: baseline,
