@@ -32,13 +32,18 @@ The binary is `target\release\heatlog.exe`.
 
 ```
 heatlog snapshot          # read all sensors once and print them
-heatlog record            # record until Ctrl-C
+heatlog record            # record until stopped (q, Esc or Ctrl-C)
 heatlog record --auto     # wait for a configured game, record while it runs
-heatlog record --interval 2 --out D:\logs   # optional overrides
+heatlog record --interval 2 --out D:\logs --no-tui   # optional overrides
 heatlog list              # show recorded sessions
 heatlog report            # summarise the most recent session
 heatlog report 2026-11-14_23-34-05          # summarise a specific one
 ```
+
+While recording, heatlog shows a live dashboard with current values and
+sparkline history for GPU temperature, GPU utilisation, CPU usage and the
+fastest core's clock, plus a throttle indicator. `--no-tui` (or piping the
+output) switches to plain line-by-line status instead.
 
 Example report:
 

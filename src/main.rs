@@ -1,4 +1,5 @@
 mod record;
+mod tui;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -30,6 +31,9 @@ enum Command {
         /// Directory to write the session file to (overrides the config file)
         #[arg(long)]
         out: Option<std::path::PathBuf>,
+        /// Plain line-by-line output instead of the live dashboard
+        #[arg(long)]
+        no_tui: bool,
     },
     /// Summarise a recorded session (defaults to the most recent)
     Report {
@@ -48,9 +52,10 @@ fn main() -> Result<()> {
             auto,
             interval,
             out,
+            no_tui,
         } => {
             let cfg = config::load_or_create()?;
-            record::run(&cfg, auto, interval, out)
+            record::run(&cfg, auto, interval, out, no_tui)
         }
         Command::Report { session } => {
             let cfg = config::load_or_create()?;

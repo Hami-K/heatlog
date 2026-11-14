@@ -19,7 +19,9 @@ pub fn run(
     auto: bool,
     interval_override: Option<u64>,
     out_override: Option<PathBuf>,
+    no_tui: bool,
 ) -> Result<()> {
+    use std::io::IsTerminal as _;
     let interval_secs = interval_override.unwrap_or(cfg.interval_secs).max(1);
     let sessions_dir = match out_override {
         Some(dir) => dir,
@@ -72,11 +74,13 @@ pub fn run(
     let mut writer = SessionWriter::create(&sessions_dir, &meta)?;
     println!("Recording to {} (Ctrl-C to stop)", writer.path().display());
 
+    let mut tui = (!no_tui && std::io::stdout().is_terminal()).then(crate::tui::Tui::start);
     let interval = Duration::from_secs(interval_secs);
     let started = std::time::Instant::now();
     let mut process_watch = System::new();
     let mut count: u64 = 0;
     let mut tick: u32 = 1;
+    let mut exit_note = None;
     while !stop.load(Ordering::SeqCst) {
         // Sleep until an absolute tick so sensor-read time doesn't stretch
         // the interval; skip ticks that are already in the past.
@@ -86,7 +90,14 @@ pub fn run(
             tick += 1;
             target = started + interval * tick;
         }
-        std::thread::sleep(target - now);
+        match &mut tui {
+            Some(tui) => {
+                if tui.wait(target)? {
+                    break;
+                }
+            }
+            None => std::thread::sleep(target - now),
+        }
         tick += 1;
         if stop.load(Ordering::SeqCst) {
             break;
@@ -95,26 +106,38 @@ pub fn run(
         let cpu_snap = cpu.read();
         let gpu_snap = gpu.as_ref().and_then(|g| g.read().ok());
         let temp = temp_source.as_mut().and_then(|s| s.read_c().ok());
-        print_status(
-            count + 1,
-            cpu_snap.sample.usage_pct,
-            gpu_snap.as_ref().map(|g| g.temp_c),
-            temp,
-        );
-        writer.append(&Sample::new(Utc::now(), cpu_snap, gpu_snap, temp))?;
+        let sample = Sample::new(Utc::now(), cpu_snap, gpu_snap, temp);
+        writer.append(&sample)?;
         count += 1;
+        match &mut tui {
+            Some(tui) => tui.draw(
+                &sample,
+                count,
+                started.elapsed(),
+                &writer.path().display().to_string(),
+            )?,
+            None => print_status(
+                count,
+                sample.cpu.usage_pct,
+                sample.gpu.as_ref().map(|g| g.temp_c),
+                temp,
+            ),
+        }
 
         if let Some((pid, name)) = &game {
             process_watch.refresh_processes(ProcessesToUpdate::All, true);
             if process_watch.process(*pid).is_none() {
-                println!();
-                println!("{name} exited, stopping");
+                exit_note = Some(format!("{name} exited, stopping"));
                 break;
             }
         }
     }
 
+    drop(tui); // leave the alternate screen before printing the summary
     println!();
+    if let Some(note) = exit_note {
+        println!("{note}");
+    }
     println!("Saved {count} samples to {}", writer.path().display());
     Ok(())
 }
