@@ -56,12 +56,14 @@ impl Tui {
         file: &str,
     ) -> Result<()> {
         if let Some(gpu) = &sample.gpu {
-            self.gpu_temp.push(u64::from(gpu.temp_c));
-            self.gpu_util.push(u64::from(gpu.util_pct));
+            push_capped(&mut self.gpu_temp, u64::from(gpu.temp_c));
+            push_capped(&mut self.gpu_util, u64::from(gpu.util_pct));
         }
-        self.cpu_usage.push(sample.cpu.usage_pct as u64);
-        self.cpu_mhz
-            .push(sample.cpu.per_core_mhz.iter().copied().max().unwrap_or(0));
+        push_capped(&mut self.cpu_usage, sample.cpu.usage_pct as u64);
+        push_capped(
+            &mut self.cpu_mhz,
+            sample.cpu.per_core_mhz.iter().copied().max().unwrap_or(0),
+        );
 
         let Self {
             terminal,
@@ -154,6 +156,16 @@ impl Tui {
             );
         })?;
         Ok(())
+    }
+}
+
+/// Sparklines only show the newest points that fit on screen, so history
+/// beyond any realistic terminal width is dead weight.
+fn push_capped(history: &mut Vec<u64>, value: u64) {
+    history.push(value);
+    if history.len() > 1024 {
+        let excess = history.len() - 1024;
+        history.drain(..excess);
     }
 }
 
