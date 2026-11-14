@@ -1,3 +1,4 @@
+pub mod charts;
 pub mod html;
 
 use std::collections::BTreeSet;
