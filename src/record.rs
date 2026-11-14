@@ -1,4 +1,5 @@
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -13,8 +14,17 @@ use crate::sensors::cpu_temp::{self, CpuTempSource};
 use crate::sensors::gpu::GpuSensor;
 use crate::session::{Sample, SessionMeta, SessionWriter};
 
-pub fn run(cfg: &Config, auto: bool, interval_override: Option<u64>) -> Result<()> {
+pub fn run(
+    cfg: &Config,
+    auto: bool,
+    interval_override: Option<u64>,
+    out_override: Option<PathBuf>,
+) -> Result<()> {
     let interval_secs = interval_override.unwrap_or(cfg.interval_secs).max(1);
+    let sessions_dir = match out_override {
+        Some(dir) => dir,
+        None => cfg.sessions_dir()?,
+    };
 
     let stop = Arc::new(AtomicBool::new(false));
     {
@@ -59,7 +69,7 @@ pub fn run(cfg: &Config, auto: bool, interval_override: Option<u64>) -> Result<(
         cpu_temp_source: temp_source.as_ref().map(|s| s.label().to_string()),
         game: game.as_ref().map(|(_, name)| name.clone()),
     };
-    let mut writer = SessionWriter::create(&cfg.sessions_dir, &meta)?;
+    let mut writer = SessionWriter::create(&sessions_dir, &meta)?;
     println!("Recording to {} (Ctrl-C to stop)", writer.path().display());
 
     let interval = Duration::from_secs(interval_secs);

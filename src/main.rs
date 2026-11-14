@@ -29,6 +29,9 @@ enum Command {
         /// Seconds between samples (overrides the config file)
         #[arg(long)]
         interval: Option<u64>,
+        /// Directory to write the session file to (overrides the config file)
+        #[arg(long)]
+        out: Option<std::path::PathBuf>,
     },
 }
 
@@ -36,9 +39,13 @@ fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Snapshot => snapshot(),
-        Command::Record { auto, interval } => {
+        Command::Record {
+            auto,
+            interval,
+            out,
+        } => {
             let cfg = config::load_or_create()?;
-            record::run(&cfg, auto, interval)
+            record::run(&cfg, auto, interval, out)
         }
     }
 }

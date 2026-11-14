@@ -8,7 +8,7 @@ use serde::Deserialize;
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
     pub interval_secs: u64,
-    pub sessions_dir: PathBuf,
+    pub sessions_dir: Option<PathBuf>,
     pub games: Vec<String>,
     pub lhm_url: String,
 }
@@ -17,11 +17,27 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             interval_secs: 1,
-            sessions_dir: PathBuf::from("sessions"),
+            sessions_dir: None,
             games: Vec::new(),
             lhm_url: "http://localhost:8085/data.json".to_string(),
         }
     }
+}
+
+impl Config {
+    /// Where session files live: the config override if set, else
+    /// `<app data>\heatlog\sessions`.
+    pub fn sessions_dir(&self) -> Result<PathBuf> {
+        match &self.sessions_dir {
+            Some(dir) => Ok(dir.clone()),
+            None => Ok(data_dir()?.join("sessions")),
+        }
+    }
+}
+
+pub fn data_dir() -> Result<PathBuf> {
+    let appdata = std::env::var_os("APPDATA").context("APPDATA environment variable not set")?;
+    Ok(PathBuf::from(appdata).join("heatlog"))
 }
 
 const DEFAULT_TEMPLATE: &str = r#"# heatlog configuration
@@ -29,9 +45,9 @@ const DEFAULT_TEMPLATE: &str = r#"# heatlog configuration
 # Seconds between samples while recording.
 interval_secs = 1
 
-# Where session files are written: relative to the directory heatlog runs
-# from, or an absolute path.
-sessions_dir = "sessions"
+# Session files are written to a "sessions" folder next to this config file.
+# Uncomment to store them somewhere else:
+# sessions_dir = "D:\\heatlog-sessions"
 
 # Process names for `heatlog record --auto`. Recording starts when one of
 # these processes appears and stops when it exits. Find the exact name in
@@ -45,8 +61,7 @@ lhm_url = "http://localhost:8085/data.json"
 "#;
 
 pub fn config_path() -> Result<PathBuf> {
-    let appdata = std::env::var_os("APPDATA").context("APPDATA environment variable not set")?;
-    Ok(PathBuf::from(appdata).join("heatlog").join("config.toml"))
+    Ok(data_dir()?.join("config.toml"))
 }
 
 /// Loads the config, writing a commented default file on first run.
