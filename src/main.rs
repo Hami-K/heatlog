@@ -39,6 +39,12 @@ enum Command {
     Report {
         /// Session file: a path, or a name from `heatlog list`
         session: Option<String>,
+        /// Write a self-contained HTML report with charts next to the session
+        #[arg(long)]
+        html: bool,
+        /// Open the HTML report in the default browser (implies --html)
+        #[arg(long)]
+        open: bool,
     },
     /// Show recorded sessions
     List,
@@ -57,11 +63,29 @@ fn main() -> Result<()> {
             let cfg = config::load_or_create()?;
             record::run(&cfg, auto, interval, out, no_tui)
         }
-        Command::Report { session } => {
+        Command::Report {
+            session,
+            html,
+            open,
+        } => {
             let cfg = config::load_or_create()?;
             let path = resolve_session(&cfg, session.as_deref())?;
             let session = session::read(&path)?;
-            report::print(&report::analyze(&session)?);
+            let summary = report::analyze(&session)?;
+            if html || open {
+                let out = path.with_extension("html");
+                std::fs::write(&out, report::html::render(&session, &summary)?)?;
+                println!("Wrote {}", out.display());
+                if open {
+                    // `start` must go through cmd; the empty "" is its window title.
+                    std::process::Command::new("cmd")
+                        .args(["/C", "start", ""])
+                        .arg(&out)
+                        .spawn()?;
+                }
+            } else {
+                report::print(&summary);
+            }
             Ok(())
         }
         Command::List => {

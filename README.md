@@ -38,6 +38,7 @@ heatlog record --interval 2 --out D:\logs --no-tui   # optional overrides
 heatlog list              # show recorded sessions
 heatlog report            # summarise the most recent session
 heatlog report 2026-11-14_23-34-05          # summarise a specific one
+heatlog report --html --open                # HTML report with charts
 ```
 
 While recording, heatlog shows a live dashboard with current values and
@@ -58,6 +59,14 @@ GPU  NVIDIA GeForce RTX 4060 Laptop GPU
     thermal limit (software): 2 episode(s), 0:07 total, longest at 0:10
 ...
 ```
+
+`report --html` writes a single self-contained HTML file (inline SVG, no
+scripts or internet needed) next to the session file: the summary numbers
+plus time charts for GPU temperature, core clock and power, CPU usage,
+fastest-core clock and CPU temperature. Regions where the GPU throttled, or
+where the CPU clock-drop heuristic fired, are shaded. Long sessions are
+downsampled for display in a way that preserves spikes. `--open` launches it
+in the default browser.
 
 <!-- SCREENSHOTS: add terminal screenshots here -->
 
