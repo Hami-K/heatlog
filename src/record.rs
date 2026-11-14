@@ -5,14 +5,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
-use chrono::{Local, Utc};
-use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use heatlog::config::{self, Config};
-use heatlog::sensors::cpu::CpuSensor;
-use heatlog::sensors::cpu_temp::{self, CpuTempSource};
-use heatlog::sensors::gpu::GpuSensor;
-use heatlog::session::{Sample, SessionMeta, SessionWriter};
+use heatlog::recorder::{self, Recorder};
 
 pub fn run(
     cfg: &Config,
@@ -37,50 +32,44 @@ pub fn run(
     }
 
     let game = if auto {
-        match wait_for_game(cfg, &stop)? {
-            Some(found) => Some(found),
+        if cfg.games.is_empty() {
+            let path = config::config_path()?;
+            bail!(
+                "auto mode needs process names in the `games` list of {}.\n\
+                 Find the exact name in Task Manager (Details tab, Name column) while the game runs.",
+                path.display()
+            );
+        }
+        println!(
+            "Waiting for one of {:?} to start (Ctrl-C to cancel)",
+            cfg.games
+        );
+        match recorder::wait_for_game(&cfg.games, &stop) {
+            Some((pid, name)) => {
+                println!("{name} detected (pid {pid})");
+                Some((pid, name))
+            }
             None => return Ok(()), // cancelled while waiting
         }
     } else {
         None
     };
 
-    let gpu = match GpuSensor::new() {
-        Ok(gpu) => Some(gpu),
-        Err(_) => {
-            println!("GPU unavailable, recording CPU/RAM only");
-            None
-        }
-    };
-    let mut cpu = CpuSensor::new();
-    let mut temp_source: Option<Box<dyn CpuTempSource>> = cpu_temp::detect(&cfg.lhm_url);
-    match &temp_source {
-        Some(src) => println!("CPU temperature source: {}", src.label()),
+    let mut rec = Recorder::start(&cfg.lhm_url, &sessions_dir, interval_secs, game)?;
+    if !rec.gpu_available() {
+        println!("GPU unavailable, recording CPU/RAM only");
+    }
+    match rec.cpu_temp_source() {
+        Some(label) => println!("CPU temperature source: {label}"),
         None => println!(
             "CPU temperature: unavailable (start LibreHardwareMonitor's web server to enable it)"
         ),
     }
-
-    let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
-    let first_read = cpu.read();
-    let meta = SessionMeta {
-        started: Local::now(),
-        interval_secs,
-        cpu_name: first_read.name,
-        ram_total_mib: Some(first_read.ram_total_mib),
-        gpu_name: gpu_info.as_ref().map(|g| g.name.clone()),
-        vram_total_mib: gpu_info.as_ref().map(|g| g.vram_total_mib),
-        cpu_temp_source: temp_source.as_ref().map(|s| s.label().to_string()),
-        game: game.as_ref().map(|(_, name)| name.clone()),
-    };
-    let mut writer = SessionWriter::create(&sessions_dir, &meta)?;
-    println!("Recording to {} (Ctrl-C to stop)", writer.path().display());
+    println!("Recording to {} (Ctrl-C to stop)", rec.path().display());
 
     let mut tui = (!no_tui && std::io::stdout().is_terminal()).then(crate::tui::Tui::start);
     let interval = Duration::from_secs(interval_secs);
     let started = std::time::Instant::now();
-    let mut process_watch = System::new();
-    let mut count: u64 = 0;
     let mut tick: u32 = 1;
     let mut exit_note = None;
     while !stop.load(Ordering::SeqCst) {
@@ -105,33 +94,25 @@ pub fn run(
             break;
         }
 
-        let cpu_snap = cpu.read();
-        let gpu_snap = gpu.as_ref().and_then(|g| g.read().ok());
-        let temp = temp_source.as_mut().and_then(|s| s.read_c().ok());
-        let sample = Sample::new(Utc::now(), cpu_snap, gpu_snap, temp);
-        writer.append(&sample)?;
-        count += 1;
+        let step = rec.step()?;
         match &mut tui {
             Some(tui) => tui.draw(
-                &sample,
-                count,
+                &step.sample,
+                rec.count(),
                 started.elapsed(),
-                &writer.path().display().to_string(),
+                &rec.path().display().to_string(),
             )?,
             None => print_status(
-                count,
-                sample.cpu.usage_pct,
-                sample.gpu.as_ref().map(|g| g.temp_c),
-                temp,
+                rec.count(),
+                step.sample.cpu.usage_pct,
+                step.sample.gpu.as_ref().map(|g| g.temp_c),
+                step.sample.cpu_temp_c,
             ),
         }
 
-        if let Some((pid, name)) = &game {
-            process_watch.refresh_processes(ProcessesToUpdate::All, true);
-            if process_watch.process(*pid).is_none() {
-                exit_note = Some(format!("{name} exited, stopping"));
-                break;
-            }
+        if let Some(name) = step.game_exited {
+            exit_note = Some(format!("{name} exited, stopping"));
+            break;
         }
     }
 
@@ -140,7 +121,7 @@ pub fn run(
     if let Some(note) = exit_note {
         println!("{note}");
     }
-    println!("Saved {count} samples to {}", writer.path().display());
+    println!("Saved {} samples to {}", rec.count(), rec.path().display());
     Ok(())
 }
 
@@ -155,33 +136,4 @@ fn print_status(n: u64, cpu_pct: f32, gpu_temp: Option<u32>, cpu_temp: Option<f3
     };
     print!("\rsample {n}  CPU {cpu_pct:.0}%  {cpu_t}  {gpu}   ");
     let _ = std::io::stdout().flush();
-}
-
-fn wait_for_game(cfg: &Config, stop: &AtomicBool) -> Result<Option<(Pid, String)>> {
-    if cfg.games.is_empty() {
-        let path = config::config_path()?;
-        bail!(
-            "auto mode needs process names in the `games` list of {}.\n\
-             Find the exact name in Task Manager (Details tab, Name column) while the game runs.",
-            path.display()
-        );
-    }
-
-    println!(
-        "Waiting for one of {:?} to start (Ctrl-C to cancel)",
-        cfg.games
-    );
-    let mut sys = System::new();
-    while !stop.load(Ordering::SeqCst) {
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        for process in sys.processes().values() {
-            let name = process.name().to_string_lossy();
-            if cfg.games.iter().any(|g| g.eq_ignore_ascii_case(&name)) {
-                println!("{name} detected (pid {})", process.pid());
-                return Ok(Some((process.pid(), name.into_owned())));
-            }
-        }
-        std::thread::sleep(Duration::from_secs(2));
-    }
-    Ok(None)
 }

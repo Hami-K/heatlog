@@ -1,0 +1,157 @@
+//! Recording engine shared by frontends: sensor setup, per-tick sampling,
+//! session writing and game watching. Frontends own the loop, the timing
+//! and all display.
+
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
+
+use anyhow::Result;
+use chrono::{Local, Utc};
+use sysinfo::{Pid, ProcessesToUpdate, System};
+
+use crate::sensors::cpu::CpuSensor;
+use crate::sensors::cpu_temp::{self, CpuTempSource};
+use crate::sensors::gpu::GpuSensor;
+use crate::session::{Sample, SessionMeta, SessionWriter};
+
+pub struct Recorder {
+    gpu: Option<GpuSensor>,
+    cpu: CpuSensor,
+    temp_source: Option<Box<dyn CpuTempSource>>,
+    writer: SessionWriter,
+    game: Option<(Pid, String)>,
+    process_watch: System,
+    count: u64,
+}
+
+pub struct Step {
+    pub sample: Sample,
+    /// The watched game's name when it has exited; stop after this step.
+    pub game_exited: Option<String>,
+}
+
+impl Recorder {
+    /// Initialises sensors and creates the session file. The first run on a
+    /// machine can take a few seconds (WMI/COM startup). Call from the
+    /// thread that will do the sampling: the WMI handles stay on it.
+    pub fn start(
+        lhm_url: &str,
+        sessions_dir: &Path,
+        interval_secs: u64,
+        game: Option<(Pid, String)>,
+    ) -> Result<Self> {
+        let gpu = GpuSensor::new().ok();
+        let mut cpu = CpuSensor::new();
+        let temp_source = cpu_temp::detect(lhm_url);
+        let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
+        let first_read = cpu.read();
+        let meta = SessionMeta {
+            started: Local::now(),
+            interval_secs,
+            cpu_name: first_read.name,
+            ram_total_mib: Some(first_read.ram_total_mib),
+            gpu_name: gpu_info.as_ref().map(|g| g.name.clone()),
+            vram_total_mib: gpu_info.as_ref().map(|g| g.vram_total_mib),
+            cpu_temp_source: temp_source.as_ref().map(|s| s.label().to_string()),
+            game: game.as_ref().map(|(_, name)| name.clone()),
+        };
+        let writer = SessionWriter::create(sessions_dir, &meta)?;
+        Ok(Self {
+            gpu,
+            cpu,
+            temp_source,
+            writer,
+            game,
+            process_watch: System::new(),
+            count: 0,
+        })
+    }
+
+    pub fn gpu_available(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    pub fn cpu_temp_source(&self) -> Option<&'static str> {
+        self.temp_source.as_ref().map(|s| s.label())
+    }
+
+    pub fn path(&self) -> &Path {
+        self.writer.path()
+    }
+
+    pub fn count(&self) -> u64 {
+        self.count
+    }
+
+    /// Reads all sensors once, appends the sample to the session file, and
+    /// checks whether the watched game is still running. Call at the
+    /// recording interval; shorter gaps make the delta-based counters
+    /// meaningless.
+    pub fn step(&mut self) -> Result<Step> {
+        let cpu_snap = self.cpu.read();
+        let gpu_snap = self.gpu.as_ref().and_then(|g| g.read().ok());
+        let temp = self.temp_source.as_mut().and_then(|s| s.read_c().ok());
+        let sample = Sample::new(Utc::now(), cpu_snap, gpu_snap, temp);
+        self.writer.append(&sample)?;
+        self.count += 1;
+
+        let game_exited = match &self.game {
+            Some((pid, name)) => {
+                self.process_watch
+                    .refresh_processes(ProcessesToUpdate::All, true);
+                self.process_watch
+                    .process(*pid)
+                    .is_none()
+                    .then(|| name.clone())
+            }
+            None => None,
+        };
+        Ok(Step {
+            sample,
+            game_exited,
+        })
+    }
+}
+
+/// Polls the process list every two seconds until a process whose name
+/// matches one of `games` (case-insensitive) appears, or the stop flag is
+/// set (returns None).
+pub fn wait_for_game(games: &[String], stop: &AtomicBool) -> Option<(Pid, String)> {
+    let mut sys = System::new();
+    while !stop.load(Ordering::SeqCst) {
+        sys.refresh_processes(ProcessesToUpdate::All, true);
+        for process in sys.processes().values() {
+            let name = process.name().to_string_lossy();
+            if games.iter().any(|g| g.eq_ignore_ascii_case(&name)) {
+                return Some((process.pid(), name.into_owned()));
+            }
+        }
+        std::thread::sleep(Duration::from_secs(2));
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Smoke test: start, one sample, read the file back. Runs on any
+    /// Windows machine or CI runner — no GPU needed (the GPU path degrades
+    /// to None) and the LHM URL points at a closed port.
+    #[test]
+    fn records_meta_and_one_sample() {
+        let dir = std::env::temp_dir().join(format!("heatlog-rec-test-{}", std::process::id()));
+        let mut rec = Recorder::start("http://127.0.0.1:9/none", &dir, 1, None).unwrap();
+        std::thread::sleep(Duration::from_millis(1100));
+        let step = rec.step().unwrap();
+        assert!(step.game_exited.is_none());
+        assert_eq!(rec.count(), 1);
+
+        let session = crate::session::read(rec.path()).unwrap();
+        assert_eq!(session.meta.interval_secs, 1);
+        assert_eq!(session.samples.len(), 1);
+        assert!(!session.samples[0].cpu.per_core_mhz.is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}
