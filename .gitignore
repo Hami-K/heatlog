@@ -1,0 +1,12 @@
+# Build output
+/target
+
+# Recorded sessions (local data, not source)
+/sessions
+
+# Personal study notes, kept local only
+LEARNING.md
+
+# OS / editor noise
+Thumbs.db
+.DS_Store
