@@ -1,5 +1,7 @@
 # heatlog
 
+[![CI](https://github.com/Hami-K/heatlog/actions/workflows/ci.yml/badge.svg)](https://github.com/Hami-K/heatlog/actions/workflows/ci.yml)
+
 A Windows command-line tool that records hardware stats while you game and
 summarises them afterwards: peak temperatures and clocks, how long the GPU
 throttled and why, and when the worst moments happened.
@@ -18,7 +20,11 @@ and it does not need administrator rights.
   Without it heatlog tries the ACPI thermal zone, and otherwise marks CPU
   temperature as unavailable.
 
-## Build
+## Install
+
+Download `heatlog.exe` from the
+[latest release](https://github.com/Hami-K/heatlog/releases) and run it from a
+terminal, or build from source:
 
 ```
 git clone https://github.com/Hami-K/heatlog
