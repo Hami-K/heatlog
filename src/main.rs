@@ -132,21 +132,14 @@ fn list_sessions(cfg: &config::Config) -> Result<()> {
     }
     println!("Sessions in {}", dir.display());
     for path in files {
-        match session::read(&path) {
+        match session::peek(&path) {
             Ok(s) => {
-                let duration = s
-                    .samples
-                    .last()
-                    .map(|last| {
-                        (last.t_ms - s.samples[0].t_ms).max(0) as u64 / 1000 + s.meta.interval_secs
-                    })
-                    .unwrap_or(0);
-                let mins = duration / 60;
-                let secs = duration % 60;
+                let mins = s.duration_secs / 60;
+                let secs = s.duration_secs % 60;
                 println!(
                     "  {}  {mins}:{secs:02}  {} samples  {}",
                     s.meta.started.format("%Y-%m-%d %H:%M:%S"),
-                    s.samples.len(),
+                    s.sample_count,
                     s.meta.game.as_deref().unwrap_or("-"),
                 );
             }

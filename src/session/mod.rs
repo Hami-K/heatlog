@@ -86,20 +86,71 @@ pub fn read(path: &Path) -> Result<Session> {
     Ok(Session { meta, samples })
 }
 
-/// Session files in `dir`, sorted oldest first (timestamped names sort
-/// chronologically).
+pub struct SessionPeek {
+    pub meta: SessionMeta,
+    pub sample_count: usize,
+    pub duration_secs: u64,
+}
+
+/// Listing-grade summary of a session, parsing only the metadata and the
+/// first and last sample lines — `read` would JSON-parse every sample,
+/// which is too slow across months of accumulated sessions.
+pub fn peek(path: &Path) -> Result<SessionPeek> {
+    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut lines = text.lines().filter(|line| !line.trim().is_empty());
+    let meta: SessionMeta = serde_json::from_str(
+        lines
+            .next()
+            .with_context(|| format!("{} is empty", path.display()))?,
+    )
+    .context("parsing session metadata (line 1)")?;
+
+    let rest: Vec<&str> = lines.collect();
+    let first_t = rest
+        .first()
+        .and_then(|line| serde_json::from_str::<Sample>(line).ok())
+        .map(|s| s.t_ms);
+    // Search from the end past a possibly truncated final line.
+    let last = rest.iter().enumerate().rev().find_map(|(i, line)| {
+        serde_json::from_str::<Sample>(line)
+            .ok()
+            .map(|s| (i, s.t_ms))
+    });
+
+    let (sample_count, duration_secs) = match (first_t, last) {
+        (Some(first), Some((last_idx, last_t))) => (
+            last_idx + 1,
+            (last_t - first).max(0) as u64 / 1000 + meta.interval_secs,
+        ),
+        _ => (0, 0),
+    };
+    Ok(SessionPeek {
+        meta,
+        sample_count,
+        duration_secs,
+    })
+}
+
+/// Session files in `dir`, oldest first. Ordered by modified time, not
+/// name: "newest session" must stay correct even when a foreign-named
+/// file lands in the folder.
 pub fn list_files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut files = Vec::new();
     if dir.exists() {
         for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-            let path = entry?.path();
+            let entry = entry?;
+            let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "jsonl") {
-                files.push(path);
+                let modified = entry
+                    .metadata()
+                    .and_then(|m| m.modified())
+                    .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                files.push((modified, path));
             }
         }
     }
     files.sort();
-    Ok(files)
+    Ok(files.into_iter().map(|(_, path)| path).collect())
 }
 
 pub struct SessionWriter {
@@ -110,11 +161,29 @@ pub struct SessionWriter {
 impl SessionWriter {
     pub fn create(dir: &Path, meta: &SessionMeta) -> Result<Self> {
         fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-        let path = dir.join(format!(
-            "{}.jsonl",
-            meta.started.format("%Y-%m-%d_%H-%M-%S")
-        ));
-        let file = File::create(&path).with_context(|| format!("creating {}", path.display()))?;
+        let stamp = meta.started.format("%Y-%m-%d_%H-%M-%S");
+        // Filenames have second resolution; create_new plus a suffix keeps
+        // two recorders started in the same second from clobbering one file.
+        let (file, path) = (0..10)
+            .find_map(|n| {
+                let name = if n == 0 {
+                    format!("{stamp}.jsonl")
+                } else {
+                    format!("{stamp}-{n}.jsonl")
+                };
+                let path = dir.join(name);
+                match fs::OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(&path)
+                {
+                    Ok(file) => Some(Ok((file, path))),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => None,
+                    Err(e) => Some(Err(e)),
+                }
+            })
+            .with_context(|| format!("no free session filename for {stamp} in {}", dir.display()))?
+            .with_context(|| format!("creating session file in {}", dir.display()))?;
         let mut out = BufWriter::new(file);
         writeln!(out, "{}", serde_json::to_string(meta)?)?;
         out.flush()?;
@@ -131,5 +200,122 @@ impl SessionWriter {
         writeln!(self.out, "{}", serde_json::to_string(sample)?)?;
         self.out.flush()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("heatlog-{tag}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn meta() -> SessionMeta {
+        SessionMeta {
+            started: Local::now(),
+            interval_secs: 1,
+            cpu_name: "test".into(),
+            ram_total_mib: None,
+            gpu_name: None,
+            vram_total_mib: None,
+            cpu_temp_source: None,
+            game: None,
+        }
+    }
+
+    fn sample_line(t_ms: i64) -> String {
+        serde_json::to_string(&Sample {
+            t_ms,
+            cpu: CpuSample {
+                usage_pct: 10.0,
+                per_core_mhz: vec![1000],
+                per_core_usage: vec![10.0],
+            },
+            gpu: None,
+            cpu_temp_c: None,
+            ram_used_mib: 1,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn read_tolerates_a_truncated_final_line_only() {
+        let dir = temp_dir("read");
+        let path = dir.join("s.jsonl");
+        let meta_line = serde_json::to_string(&meta()).unwrap();
+
+        // A recorder killed mid-write leaves a torn last line: accepted.
+        fs::write(
+            &path,
+            format!(
+                "{meta_line}\n{}\n{}\n{{\"t_ms\":99",
+                sample_line(0),
+                sample_line(1000)
+            ),
+        )
+        .unwrap();
+        let session = read(&path).unwrap();
+        assert_eq!(session.samples.len(), 2);
+
+        // Corruption anywhere else means a broken file: rejected.
+        fs::write(
+            &path,
+            format!("{meta_line}\ngarbage\n{}", sample_line(1000)),
+        )
+        .unwrap();
+        assert!(read(&path).is_err());
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn peek_matches_read_without_parsing_everything() {
+        let dir = temp_dir("peek");
+        let path = dir.join("s.jsonl");
+        let meta_line = serde_json::to_string(&meta()).unwrap();
+        fs::write(
+            &path,
+            format!(
+                "{meta_line}\n{}\n{}\n{}\n{{\"torn",
+                sample_line(0),
+                sample_line(1000),
+                sample_line(9500)
+            ),
+        )
+        .unwrap();
+
+        let peeked = peek(&path).unwrap();
+        assert_eq!(peeked.sample_count, 3);
+        assert_eq!(peeked.duration_secs, 10); // 9.5s span + 1s interval
+        assert_eq!(peeked.meta.interval_secs, 1);
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn newest_session_is_by_modified_time_not_name() {
+        let dir = temp_dir("order");
+        // "zzz" sorts after any date-named file; it must not win on name.
+        fs::write(dir.join("zzz.jsonl"), "old").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        fs::write(dir.join("2026-01-01_00-00-00.jsonl"), "new").unwrap();
+
+        let files = list_files(&dir).unwrap();
+        let newest = files.last().unwrap().file_name().unwrap().to_string_lossy();
+        assert_eq!(newest, "2026-01-01_00-00-00.jsonl");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn same_second_sessions_get_distinct_files() {
+        let dir = temp_dir("collide");
+        let meta = meta();
+        let first = SessionWriter::create(&dir, &meta).unwrap();
+        let second = SessionWriter::create(&dir, &meta).unwrap();
+        assert_ne!(first.path(), second.path());
+        assert!(first.path().exists() && second.path().exists());
+        fs::remove_dir_all(&dir).ok();
     }
 }
