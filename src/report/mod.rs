@@ -281,12 +281,12 @@ pub fn print(s: &Summary) {
     print_series("Usage", &s.cpu.usage_pct, "%", 0);
     print_series("Fastest core", &s.cpu.max_core_mhz, "MHz", 0);
     match &s.cpu_temp {
-        Some(temp) => print_series(
-            "Temperature",
-            temp,
-            &format!("C  [{}]", s.cpu_temp_source.as_deref().unwrap_or("unknown")),
-            0,
-        ),
+        Some(temp) => {
+            print_series("Temperature", temp, "C", 0);
+            if let Some(source) = &s.cpu_temp_source {
+                println!("               (source: {source})");
+            }
+        }
         None => println!("  Temperature  not recorded"),
     }
     match &s.cpu.throttle {
