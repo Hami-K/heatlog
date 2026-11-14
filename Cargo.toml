@@ -7,4 +7,6 @@ edition = "2021"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 nvml-wrapper = "0.11"
+serde = { version = "1", features = ["derive"] }
 sysinfo = "0.33"
+wmi = "0.14"

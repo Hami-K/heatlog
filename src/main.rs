@@ -39,8 +39,9 @@ fn snapshot() -> Result<()> {
 
     println!();
     println!("== CPU / RAM ==");
-    let cpu = sensors::cpu::read();
-    print_cpu(&cpu);
+    let mut cpu = sensors::cpu::CpuSensor::new();
+    std::thread::sleep(sensors::cpu::MIN_SAMPLE_GAP);
+    print_cpu(&cpu.read());
     Ok(())
 }
 
@@ -68,6 +69,9 @@ fn print_gpu(s: &sensors::gpu::GpuSnapshot) {
 fn print_cpu(s: &sensors::cpu::CpuSnapshot) {
     println!("Name:         {}", s.name);
     println!("Usage:        {:.1}%", s.usage_pct);
+    if !s.live_clocks {
+        println!("(live clock counters unavailable; showing static base clock)");
+    }
     for (i, (mhz, usage)) in s.per_core_mhz.iter().zip(&s.per_core_usage).enumerate() {
         println!("  core {i:>2}:    {mhz:>5} MHz  {usage:>5.1}%");
     }
