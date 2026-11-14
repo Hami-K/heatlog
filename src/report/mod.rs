@@ -206,6 +206,91 @@ fn analyze_cpu(samples: &[Sample], offsets: &[u64], interval: u64) -> CpuSummary
     }
 }
 
+/// Which verdict colour the session earns. Thermal throttling is the red
+/// case; power-limit throttling, estimated CPU drops, or merely running hot
+/// are amber. A quiet session where the CPU check could not run (it needs
+/// sustained load) is grey ("na"), not green — "nothing found" is not
+/// "all clear".
+fn verdict_level(
+    thermal_episodes: usize,
+    other_episodes: usize,
+    cpu_estimated: usize,
+    gpu_peak_c: Option<f64>,
+    cpu_check_ran: bool,
+) -> &'static str {
+    if thermal_episodes > 0 {
+        "bad"
+    } else if other_episodes > 0 || cpu_estimated > 0 || gpu_peak_c.is_some_and(|p| p >= 85.0) {
+        "warn"
+    } else if cpu_check_ran {
+        "good"
+    } else {
+        "na"
+    }
+}
+
+/// Plain-language session verdict: a level ("good", "warn", "bad", "na")
+/// and one or two sentences, shared by the HTML report and the GUI.
+pub fn verdict(s: &Summary) -> (&'static str, String) {
+    let (mut thermal, mut other) = (0usize, 0usize);
+    let mut thermal_at = None;
+    if let Some(gpu) = &s.gpu {
+        for t in &gpu.throttle {
+            if t.reason.contains("thermal") || t.reason.contains("slowdown") {
+                thermal += t.episodes;
+                thermal_at = Some(t.longest_at_secs);
+            } else {
+                other += t.episodes;
+            }
+        }
+    }
+    let cpu_est = s.cpu.throttle.as_ref().map_or(0, |t| t.episodes);
+    let gpu_peak = s.gpu.as_ref().map(|g| g.temp_c.peak);
+    let class = verdict_level(thermal, other, cpu_est, gpu_peak, s.cpu.throttle.is_some());
+
+    let mut lines = Vec::new();
+    if thermal > 0 {
+        let when = thermal_at
+            .map(|t| {
+                if s.duration_secs >= 120 {
+                    format!(", mostly around minute {}", t / 60)
+                } else {
+                    format!(", around {}", fmt_time(t))
+                }
+            })
+            .unwrap_or_default();
+        lines.push(format!(
+            "Your GPU slowed itself down {thermal} time(s) to avoid overheating{when}."
+        ));
+    }
+    if other > 0 {
+        lines.push(format!(
+            "Your GPU hit its power limit {other} time(s) — common on gaming laptops."
+        ));
+    }
+    if cpu_est > 0 {
+        lines.push(format!(
+            "Your CPU appears to have slowed down {cpu_est} time(s) under heavy load (estimated)."
+        ));
+    }
+    if lines.is_empty() {
+        lines.push(if class == "na" {
+            "Not enough load to check for slowdowns — record during a game for a real result."
+                .to_string()
+        } else {
+            match gpu_peak {
+                Some(p) if p >= 85.0 => {
+                    format!("Your GPU ran hot (peak {p:.0} C) but did not slow itself down.")
+                }
+                Some(_) => "Your laptop stayed cool — no throttling detected.".to_string(),
+                None => "No slowdowns detected. (No NVIDIA GPU was recorded in this session.)"
+                    .to_string(),
+            }
+        });
+    }
+    (class, lines.join(" "))
+}
+
 fn series(points: impl Iterator<Item = (u64, f64)>) -> Option<Series> {
     let mut count = 0u64;
     let mut sum = 0.0;
@@ -462,6 +547,24 @@ mod tests {
             .collect();
         let summary = analyze(&session(samples)).unwrap();
         assert_eq!(summary.cpu.throttle.unwrap().episodes, 0);
+    }
+
+    #[test]
+    fn verdict_levels() {
+        assert_eq!(verdict_level(1, 0, 0, Some(70.0), true), "bad");
+        assert_eq!(verdict_level(0, 2, 0, Some(70.0), true), "warn");
+        assert_eq!(verdict_level(0, 0, 1, None, true), "warn");
+        assert_eq!(verdict_level(0, 0, 0, Some(86.0), false), "warn");
+        assert_eq!(verdict_level(0, 0, 0, Some(70.0), true), "good");
+        assert_eq!(verdict_level(0, 0, 0, None, true), "good");
+    }
+
+    #[test]
+    fn quiet_session_is_not_declared_clean() {
+        // An idle session gives the CPU check nothing to evaluate; that is
+        // "could not check", not "all clear".
+        assert_eq!(verdict_level(0, 0, 0, None, false), "na");
+        assert_eq!(verdict_level(0, 0, 0, Some(55.0), false), "na");
     }
 
     #[test]
