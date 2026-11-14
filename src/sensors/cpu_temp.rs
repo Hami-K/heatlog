@@ -1,5 +1,5 @@
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use anyhow::{bail, ensure, Context, Result};
@@ -110,7 +110,15 @@ fn http_get(url: &str) -> Result<String> {
         None => (rest, "/".to_string()),
     };
 
-    let mut stream = TcpStream::connect(host).with_context(|| format!("connecting to {host}"))?;
+    // connect_timeout, because a plain connect to a configured non-local
+    // host that is down can block for the ~20s OS SYN timeout per sample.
+    let addr = host
+        .to_socket_addrs()
+        .with_context(|| format!("resolving {host}"))?
+        .next()
+        .with_context(|| format!("no address for {host}"))?;
+    let mut stream = TcpStream::connect_timeout(&addr, Duration::from_secs(2))
+        .with_context(|| format!("connecting to {host}"))?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;
     stream.set_write_timeout(Some(Duration::from_secs(2)))?;
     write!(stream, "GET {path} HTTP/1.0\r\nHost: {host}\r\n\r\n")?;
