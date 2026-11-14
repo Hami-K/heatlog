@@ -235,11 +235,18 @@ fn verdict_level(
 pub fn verdict(s: &Summary) -> (&'static str, String) {
     let (mut thermal, mut other) = (0usize, 0usize);
     let mut thermal_at = None;
+    let mut thermal_most_secs = 0;
     if let Some(gpu) = &s.gpu {
         for t in &gpu.throttle {
             if t.reason.contains("thermal") || t.reason.contains("slowdown") {
                 thermal += t.episodes;
-                thermal_at = Some(t.longest_at_secs);
+                // "mostly around minute X" should come from the thermal
+                // reason with the most throttle time, not the one that
+                // happens to sort last.
+                if t.seconds >= thermal_most_secs {
+                    thermal_most_secs = t.seconds;
+                    thermal_at = Some(t.longest_at_secs);
+                }
             } else {
                 other += t.episodes;
             }
@@ -558,6 +565,59 @@ mod tests {
         assert_eq!(verdict_level(0, 0, 0, Some(86.0), false), "warn");
         assert_eq!(verdict_level(0, 0, 0, Some(70.0), true), "good");
         assert_eq!(verdict_level(0, 0, 0, None, true), "good");
+    }
+
+    #[test]
+    fn verdict_moment_follows_dominant_thermal_reason() {
+        let series = |v: f64| Series {
+            avg: v,
+            peak: v,
+            peak_at_secs: 0,
+        };
+        let summary = Summary {
+            started: chrono::Local::now(),
+            game: None,
+            interval_secs: 1,
+            duration_secs: 3600,
+            sample_count: 3600,
+            gpu_name: Some("g".into()),
+            cpu_name: "c".into(),
+            gpu: Some(GpuSummary {
+                temp_c: series(80.0),
+                core_mhz: series(2000.0),
+                power_w: series(100.0),
+                util_pct: series(95.0),
+                vram_used_mib: series(5000.0),
+                throttle: vec![
+                    // Dominant: 10 minutes of throttle around minute 5.
+                    Throttle {
+                        reason: "thermal limit (hardware)".into(),
+                        seconds: 600,
+                        episodes: 3,
+                        longest_at_secs: 300,
+                    },
+                    // Sorts last alphabetically but is a sideshow.
+                    Throttle {
+                        reason: "thermal limit (software)".into(),
+                        seconds: 60,
+                        episodes: 1,
+                        longest_at_secs: 2400,
+                    },
+                ],
+            }),
+            cpu: CpuSummary {
+                usage_pct: series(50.0),
+                max_core_mhz: series(4000.0),
+                throttle: None,
+            },
+            cpu_temp: None,
+            cpu_temp_source: None,
+            ram_peak_mib: 1000,
+            ram_total_mib: None,
+        };
+        let (class, text) = verdict(&summary);
+        assert_eq!(class, "bad");
+        assert!(text.contains("minute 5"), "{text}");
     }
 
     #[test]
