@@ -1,5 +1,6 @@
 mod config;
 mod record;
+mod report;
 mod sensors;
 mod session;
 
@@ -33,6 +34,13 @@ enum Command {
         #[arg(long)]
         out: Option<std::path::PathBuf>,
     },
+    /// Summarise a recorded session (defaults to the most recent)
+    Report {
+        /// Session file: a path, or a name from `heatlog list`
+        session: Option<String>,
+    },
+    /// Show recorded sessions
+    List,
 }
 
 fn main() -> Result<()> {
@@ -47,7 +55,79 @@ fn main() -> Result<()> {
             let cfg = config::load_or_create()?;
             record::run(&cfg, auto, interval, out)
         }
+        Command::Report { session } => {
+            let cfg = config::load_or_create()?;
+            let path = resolve_session(&cfg, session.as_deref())?;
+            let session = session::read(&path)?;
+            report::print(&report::analyze(&session)?);
+            Ok(())
+        }
+        Command::List => {
+            let cfg = config::load_or_create()?;
+            list_sessions(&cfg)
+        }
     }
+}
+
+fn resolve_session(cfg: &config::Config, arg: Option<&str>) -> Result<std::path::PathBuf> {
+    use anyhow::Context as _;
+    let dir = cfg.sessions_dir()?;
+    match arg {
+        Some(arg) => {
+            let direct = std::path::PathBuf::from(arg);
+            if direct.exists() {
+                return Ok(direct);
+            }
+            let name = if arg.ends_with(".jsonl") {
+                arg.to_string()
+            } else {
+                format!("{arg}.jsonl")
+            };
+            let candidate = dir.join(name);
+            anyhow::ensure!(
+                candidate.exists(),
+                "no session named {arg} in {}",
+                dir.display()
+            );
+            Ok(candidate)
+        }
+        None => session::list_files(&dir)?
+            .pop()
+            .with_context(|| format!("no sessions recorded yet (looked in {})", dir.display())),
+    }
+}
+
+fn list_sessions(cfg: &config::Config) -> Result<()> {
+    let dir = cfg.sessions_dir()?;
+    let files = session::list_files(&dir)?;
+    if files.is_empty() {
+        println!("No sessions recorded yet (looked in {})", dir.display());
+        return Ok(());
+    }
+    println!("Sessions in {}", dir.display());
+    for path in files {
+        match session::read(&path) {
+            Ok(s) => {
+                let duration = s
+                    .samples
+                    .last()
+                    .map(|last| {
+                        (last.t_ms - s.samples[0].t_ms).max(0) as u64 / 1000 + s.meta.interval_secs
+                    })
+                    .unwrap_or(0);
+                let mins = duration / 60;
+                let secs = duration % 60;
+                println!(
+                    "  {}  {mins}:{secs:02}  {} samples  {}",
+                    s.meta.started.format("%Y-%m-%d %H:%M:%S"),
+                    s.samples.len(),
+                    s.meta.game.as_deref().unwrap_or("-"),
+                );
+            }
+            Err(e) => println!("  {}  (unreadable: {e:#})", path.display()),
+        }
+    }
+    Ok(())
 }
 
 fn snapshot() -> Result<()> {

@@ -80,6 +80,56 @@ impl Sample {
     }
 }
 
+pub struct Session {
+    pub meta: SessionMeta,
+    pub samples: Vec<Sample>,
+}
+
+pub fn read(path: &Path) -> Result<Session> {
+    let text = fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    let mut lines = text
+        .lines()
+        .enumerate()
+        .filter(|(_, line)| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    anyhow::ensure!(!lines.is_empty(), "{} is empty", path.display());
+
+    let (_, meta_line) = lines.remove(0);
+    let meta: SessionMeta =
+        serde_json::from_str(meta_line).context("parsing session metadata (line 1)")?;
+
+    let mut samples = Vec::with_capacity(lines.len());
+    let last = lines.len();
+    for (pos, (line_no, line)) in lines.iter().enumerate() {
+        match serde_json::from_str::<Sample>(line) {
+            Ok(sample) => samples.push(sample),
+            // A truncated final line is normal if the recorder was killed
+            // mid-write; anywhere else it means a corrupt file.
+            Err(_) if pos + 1 == last => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("parsing sample on line {}", line_no + 1))
+            }
+        }
+    }
+    Ok(Session { meta, samples })
+}
+
+/// Session files in `dir`, sorted oldest first (timestamped names sort
+/// chronologically).
+pub fn list_files(dir: &Path) -> Result<Vec<PathBuf>> {
+    let mut files = Vec::new();
+    if dir.exists() {
+        for entry in fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+            let path = entry?.path();
+            if path.extension().is_some_and(|ext| ext == "jsonl") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
 pub struct SessionWriter {
     out: BufWriter<File>,
     path: PathBuf,
