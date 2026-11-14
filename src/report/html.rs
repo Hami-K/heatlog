@@ -223,19 +223,23 @@ fn meta_line(s: &Summary) -> String {
 
 /// Which verdict colour the session earns. Thermal throttling is the red
 /// case; power-limit throttling, estimated CPU drops, or merely running hot
-/// are amber.
+/// are amber. A quiet session where the CPU check could not run (it needs
+/// sustained load) is grey, not green — "nothing found" is not "all clear".
 fn verdict_level(
     thermal_episodes: usize,
     other_episodes: usize,
     cpu_estimated: usize,
     gpu_peak_c: Option<f64>,
+    cpu_check_ran: bool,
 ) -> &'static str {
     if thermal_episodes > 0 {
         "bad"
     } else if other_episodes > 0 || cpu_estimated > 0 || gpu_peak_c.is_some_and(|p| p >= 85.0) {
         "warn"
-    } else {
+    } else if cpu_check_ran {
         "good"
+    } else {
+        "na"
     }
 }
 
@@ -254,7 +258,7 @@ fn verdict(s: &Summary) -> (&'static str, String) {
     }
     let cpu_est = s.cpu.throttle.as_ref().map_or(0, |t| t.episodes);
     let gpu_peak = s.gpu.as_ref().map(|g| g.temp_c.peak);
-    let class = verdict_level(thermal, other, cpu_est, gpu_peak);
+    let class = verdict_level(thermal, other, cpu_est, gpu_peak, s.cpu.throttle.is_some());
 
     let mut lines = Vec::new();
     if thermal > 0 {
@@ -282,13 +286,17 @@ fn verdict(s: &Summary) -> (&'static str, String) {
         ));
     }
     if lines.is_empty() {
-        lines.push(match gpu_peak {
-            Some(p) if p >= 85.0 => {
-                format!("Your GPU ran hot (peak {p:.0} C) but did not slow itself down.")
-            }
-            Some(_) => "Your laptop stayed cool — no throttling detected.".to_string(),
-            None => {
-                "No slowdowns detected. (No NVIDIA GPU was recorded in this session.)".to_string()
+        lines.push(if class == "na" {
+            "Not enough load to check for slowdowns — record during a game for a real result."
+                .to_string()
+        } else {
+            match gpu_peak {
+                Some(p) if p >= 85.0 => {
+                    format!("Your GPU ran hot (peak {p:.0} C) but did not slow itself down.")
+                }
+                Some(_) => "Your laptop stayed cool — no throttling detected.".to_string(),
+                None => "No slowdowns detected. (No NVIDIA GPU was recorded in this session.)"
+                    .to_string(),
             }
         });
     }
@@ -595,12 +603,14 @@ const CSS: &str = "\
 --grid:#e5e7eb;--line:#2563eb;--band-gpu:rgba(220,38,38,.16);--band-cpu:rgba(217,119,6,.16);\
 --band-hot:rgba(220,38,38,.07);\
 --good-bg:rgba(22,163,74,.12);--good-bd:#16a34a;--warn-bg:rgba(217,119,6,.12);\
---warn-bd:#b45309;--bad-bg:rgba(220,38,38,.12);--bad-bd:#dc2626}\
+--warn-bd:#b45309;--bad-bg:rgba(220,38,38,.12);--bad-bd:#dc2626;\
+--na-bg:rgba(107,114,128,.10)}\
 @media (prefers-color-scheme:dark){:root{--bg:#111827;--ink:#e5e7eb;--muted:#9ca3af;\
 --grid:#374151;--line:#60a5fa;--band-gpu:rgba(248,113,113,.22);--band-cpu:rgba(251,191,36,.20);\
 --band-hot:rgba(248,113,113,.10);\
 --good-bg:rgba(74,222,128,.12);--good-bd:#4ade80;--warn-bg:rgba(251,191,36,.12);\
---warn-bd:#fbbf24;--bad-bg:rgba(248,113,113,.14);--bad-bd:#f87171}}\
+--warn-bd:#fbbf24;--bad-bg:rgba(248,113,113,.14);--bad-bd:#f87171;\
+--na-bg:rgba(156,163,175,.12)}}\
 body{background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif;\
 max-width:920px;margin:0 auto;padding:16px}\
 h1{font-size:20px}h2{font-size:15px;margin:18px 0 6px}\
@@ -612,6 +622,7 @@ font-size:15px}\
 .verdict.good{background:var(--good-bg);border-color:var(--good-bd)}\
 .verdict.warn{background:var(--warn-bg);border-color:var(--warn-bd)}\
 .verdict.bad{background:var(--bad-bg);border-color:var(--bad-bd)}\
+.verdict.na{background:var(--na-bg);border-color:var(--muted)}\
 .facts{margin:10px 0;padding-left:20px}\
 details{margin:10px 0}summary{cursor:pointer;color:var(--muted)}\
 details[open] summary{margin-bottom:6px}\
@@ -707,11 +718,19 @@ mod tests {
 
     #[test]
     fn verdict_levels() {
-        assert_eq!(verdict_level(1, 0, 0, Some(70.0)), "bad");
-        assert_eq!(verdict_level(0, 2, 0, Some(70.0)), "warn");
-        assert_eq!(verdict_level(0, 0, 1, None), "warn");
-        assert_eq!(verdict_level(0, 0, 0, Some(86.0)), "warn");
-        assert_eq!(verdict_level(0, 0, 0, Some(70.0)), "good");
-        assert_eq!(verdict_level(0, 0, 0, None), "good");
+        assert_eq!(verdict_level(1, 0, 0, Some(70.0), true), "bad");
+        assert_eq!(verdict_level(0, 2, 0, Some(70.0), true), "warn");
+        assert_eq!(verdict_level(0, 0, 1, None, true), "warn");
+        assert_eq!(verdict_level(0, 0, 0, Some(86.0), false), "warn");
+        assert_eq!(verdict_level(0, 0, 0, Some(70.0), true), "good");
+        assert_eq!(verdict_level(0, 0, 0, None, true), "good");
+    }
+
+    #[test]
+    fn quiet_session_is_not_declared_clean() {
+        // An idle session gives the CPU check nothing to evaluate; that is
+        // "could not check", not "all clear".
+        assert_eq!(verdict_level(0, 0, 0, None, false), "na");
+        assert_eq!(verdict_level(0, 0, 0, Some(55.0), false), "na");
     }
 }
