@@ -62,10 +62,12 @@ pub fn run(
     }
 
     let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
+    let first_read = cpu.read();
     let meta = SessionMeta {
         started: Local::now(),
         interval_secs,
-        cpu_name: cpu.read().name,
+        cpu_name: first_read.name,
+        ram_total_mib: Some(first_read.ram_total_mib),
         gpu_name: gpu_info.as_ref().map(|g| g.name.clone()),
         vram_total_mib: gpu_info.as_ref().map(|g| g.vram_total_mib),
         cpu_temp_source: temp_source.as_ref().map(|s| s.label().to_string()),

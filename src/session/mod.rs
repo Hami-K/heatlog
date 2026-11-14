@@ -16,6 +16,9 @@ pub struct SessionMeta {
     pub started: DateTime<Local>,
     pub interval_secs: u64,
     pub cpu_name: String,
+    // Option because older session files predate the field (serde reads a
+    // missing Option as None).
+    pub ram_total_mib: Option<u64>,
     pub gpu_name: Option<String>,
     pub vram_total_mib: Option<u64>,
     pub cpu_temp_source: Option<String>,

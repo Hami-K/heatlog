@@ -27,6 +27,7 @@ pub struct Summary {
     pub cpu_temp: Option<Series>,
     pub cpu_temp_source: Option<String>,
     pub ram_peak_mib: u64,
+    pub ram_total_mib: Option<u64>,
 }
 
 pub struct Series {
@@ -94,6 +95,7 @@ pub fn analyze(session: &Session) -> Result<Summary> {
         ),
         cpu_temp_source: session.meta.cpu_temp_source.clone(),
         ram_peak_mib: samples.iter().map(|s| s.ram_used_mib).max().unwrap_or(0),
+        ram_total_mib: session.meta.ram_total_mib,
     })
 }
 
@@ -378,6 +380,7 @@ mod tests {
                 started: chrono::Local::now(),
                 interval_secs: 1,
                 cpu_name: "test cpu".into(),
+                ram_total_mib: Some(16_003),
                 gpu_name: Some("test gpu".into()),
                 vram_total_mib: Some(8192),
                 cpu_temp_source: Some("test".into()),
