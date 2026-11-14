@@ -80,6 +80,19 @@ file in the default browser.
 
 <!-- SCREENSHOTS: add terminal screenshots here -->
 
+## Desktop app
+
+`heatlog-gui` is a desktop viewer for recorded sessions: a session list with
+colour-coded verdicts, and a session view with the verdict, charts (throttle
+shading, hot zones, hover values) and a collapsible technical section, plus
+one-click export of the HTML report. Build and run it from source:
+
+```
+cargo run --release --bin heatlog-gui
+```
+
+Recording from the GUI is not available yet; record with the CLI.
+
 ## Configuration
 
 `heatlog record` creates `%APPDATA%\heatlog\config.toml` on first run, with

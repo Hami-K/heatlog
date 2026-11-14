@@ -162,6 +162,35 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
         .collect()
 }
 
+impl ChartData {
+    /// Y range to display, plus the "hot" threshold for temperature
+    /// charts. Shared by the SVG renderer and the GUI plots. Works on the
+    /// full point set: downsampling keeps each bucket's min and max, so
+    /// the extremes (and therefore the domain) are identical either way.
+    pub fn y_domain(&self) -> (f64, f64, Option<f64>) {
+        let (mut lo, mut hi) = self
+            .points
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
+                (lo.min(v), hi.max(v))
+            });
+        if hi - lo < 1e-9 {
+            lo -= 1.0;
+            hi += 1.0;
+        }
+        let pad = (hi - lo) * 0.05;
+        match self.y {
+            YAxis::Pct => (0.0, 100.0, None),
+            YAxis::FromZero => (0.0, hi + pad, None),
+            YAxis::Temp { hot_from } => (
+                (lo - pad).min(40.0),
+                (hi + pad).max(hot_from + 10.0),
+                Some(hot_from),
+            ),
+        }
+    }
+}
+
 fn secs_f64(ms: i64) -> f64 {
     ms.max(0) as f64 / 1000.0
 }

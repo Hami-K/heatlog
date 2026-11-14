@@ -430,7 +430,7 @@ fn print_series(label: &str, series: &Series, unit: &str, decimals: usize) {
     );
 }
 
-fn fmt_time(total_secs: u64) -> String {
+pub fn fmt_time(total_secs: u64) -> String {
     let (h, m, s) = (total_secs / 3600, total_secs % 3600 / 60, total_secs % 60);
     if h > 0 {
         format!("{h}:{m:02}:{s:02}")

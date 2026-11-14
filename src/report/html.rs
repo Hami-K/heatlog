@@ -6,7 +6,7 @@ use std::fmt::Write as _;
 
 use anyhow::Result;
 
-use super::charts::{self, ChartData, YAxis, MAX_POINTS};
+use super::charts::{self, ChartData, MAX_POINTS};
 use super::{fmt_time, verdict, Series, Summary};
 use crate::session::Session;
 
@@ -205,25 +205,7 @@ fn technical(s: &Summary) -> String {
 
 fn chart_svg(c: &ChartData, duration: f64) -> String {
     let points = charts::downsample(&c.points, MAX_POINTS);
-    let (mut data_lo, mut data_hi) = points
-        .iter()
-        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, v)| {
-            (lo.min(v), hi.max(v))
-        });
-    if data_hi - data_lo < 1e-9 {
-        data_lo -= 1.0;
-        data_hi += 1.0;
-    }
-    let pad = (data_hi - data_lo) * 0.05;
-    let (lo, hi, hot_from) = match c.y {
-        YAxis::Pct => (0.0, 100.0, None),
-        YAxis::FromZero => (0.0, data_hi + pad, None),
-        YAxis::Temp { hot_from } => (
-            (data_lo - pad).min(40.0),
-            (data_hi + pad).max(hot_from + 10.0),
-            Some(hot_from),
-        ),
-    };
+    let (lo, hi, hot_from) = c.y_domain();
 
     let plot_w = CHART_W - MARGIN_L - MARGIN_R;
     let plot_h = CHART_H - MARGIN_T - MARGIN_B;
