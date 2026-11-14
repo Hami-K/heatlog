@@ -1,4 +1,7 @@
+mod config;
+mod record;
 mod sensors;
+mod session;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
@@ -18,12 +21,25 @@ struct Cli {
 enum Command {
     /// Read all sensors once and print the current values
     Snapshot,
+    /// Record a session to a timestamped file until stopped
+    Record {
+        /// Wait for a configured game process and record while it runs
+        #[arg(long)]
+        auto: bool,
+        /// Seconds between samples (overrides the config file)
+        #[arg(long)]
+        interval: Option<u64>,
+    },
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
     match cli.command {
         Command::Snapshot => snapshot(),
+        Command::Record { auto, interval } => {
+            let cfg = config::load_or_create()?;
+            record::run(&cfg, auto, interval)
+        }
     }
 }
 
@@ -42,6 +58,15 @@ fn snapshot() -> Result<()> {
     let mut cpu = sensors::cpu::CpuSensor::new();
     std::thread::sleep(sensors::cpu::MIN_SAMPLE_GAP);
     print_cpu(&cpu.read());
+
+    let cfg = config::load_or_create()?;
+    match sensors::cpu_temp::detect(&cfg.lhm_url) {
+        Some(mut source) => match source.read_c() {
+            Ok(t) => println!("CPU temp:     {t:.1} C ({})", source.label()),
+            Err(e) => println!("CPU temp:     unavailable ({e:#})"),
+        },
+        None => println!("CPU temp:     unavailable"),
+    }
     Ok(())
 }
 
