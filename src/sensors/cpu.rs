@@ -38,6 +38,9 @@ impl CpuSensor {
     /// Takes a first (discarded) sample of the delta-based counters so the
     /// next `read` has a baseline. Live clocks fall back to the static base
     /// clock if the performance counters can't be opened.
+    // No Default impl: constructing a sensor opens WMI handles and takes a
+    // baseline sample, which a "default value" should not silently do.
+    #[allow(clippy::new_without_default)]
     pub fn new() -> Self {
         let freq = FreqReader::new().ok();
         if let Some(f) = &freq {

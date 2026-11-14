@@ -8,11 +8,11 @@ use anyhow::{bail, Context, Result};
 use chrono::{Local, Utc};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
-use crate::config::{self, Config};
-use crate::sensors::cpu::CpuSensor;
-use crate::sensors::cpu_temp::{self, CpuTempSource};
-use crate::sensors::gpu::GpuSensor;
-use crate::session::{Sample, SessionMeta, SessionWriter};
+use heatlog::config::{self, Config};
+use heatlog::sensors::cpu::CpuSensor;
+use heatlog::sensors::cpu_temp::{self, CpuTempSource};
+use heatlog::sensors::gpu::GpuSensor;
+use heatlog::session::{Sample, SessionMeta, SessionWriter};
 
 pub fn run(
     cfg: &Config,

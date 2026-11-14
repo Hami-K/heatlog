@@ -1,11 +1,8 @@
-mod config;
 mod record;
-mod report;
-mod sensors;
-mod session;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};
+use heatlog::{config, report, sensors, session};
 
 #[derive(Parser)]
 #[command(
