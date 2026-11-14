@@ -66,13 +66,17 @@ GPU  NVIDIA GeForce RTX 4060 Laptop GPU
 ...
 ```
 
-`report --html` writes a single self-contained HTML file (inline SVG, no
-scripts or internet needed) next to the session file: the summary numbers
-plus time charts for GPU temperature, core clock and power, CPU usage,
-fastest-core clock and CPU temperature. Regions where the GPU throttled, or
-where the CPU clock-drop heuristic fired, are shaded. Long sessions are
-downsampled for display in a way that preserves spikes. `--open` launches it
-in the default browser.
+`report --html` writes a single self-contained HTML file next to the session
+(everything is inline; nothing is fetched from the internet). It opens with a
+colour-coded plain-language verdict ("Your GPU slowed itself down 2 times to
+avoid overheating, mostly around minute 33"), headline numbers in friendly
+units, then time charts with hover tooltips for GPU temperature, speed and
+power, and CPU usage, speed and temperature. Shaded regions mark GPU
+throttling (driver-reported) and estimated CPU slowdowns, temperature charts
+show the hot zone, and the full technical numbers (peaks, timestamps,
+per-reason breakdown) sit in a collapsible section. Long sessions are
+downsampled for display in a way that preserves spikes. `--open` launches the
+file in the default browser.
 
 <!-- SCREENSHOTS: add terminal screenshots here -->
 
@@ -114,3 +118,7 @@ heatlog itself, with no measurable CPU increase in the WMI provider process
   consecutive throttled samples into episodes per reason. CPU throttling is a
   clearly-labelled heuristic (sustained high load with clocks well below the
   session's own loaded baseline), because Windows exposes no direct signal.
+
+## License
+
+MIT — see [LICENSE](LICENSE).
