@@ -91,6 +91,13 @@ comments explaining each option:
 Sessions are JSON Lines files (`.jsonl`), one metadata line followed by one
 JSON object per sample, so a crash or kill loses at most the last sample.
 
+## Overhead
+
+Measured while recording at 1-second intervals (release build, Intel Core
+i9-13900H, Windows 11): about 0.14% of one CPU core and 20 MB of memory for
+heatlog itself, with no measurable CPU increase in the WMI provider process
+(WmiPrvSE) that serves the performance-counter queries.
+
 ## How it works
 
 - **GPU** — queried through NVML (the library behind `nvidia-smi`):
