@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use serde::{Deserialize, Serialize};
 use sysinfo::System;
 
 use super::cpu_freq::FreqReader;
@@ -14,12 +15,18 @@ pub struct CpuSensor {
     freq: Option<FreqReader>,
 }
 
-#[derive(Debug)]
-pub struct CpuSnapshot {
-    pub name: String,
+/// One reading; also the on-disk sample format.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct CpuSample {
     pub usage_pct: f32,
     pub per_core_mhz: Vec<u64>,
     pub per_core_usage: Vec<f32>,
+}
+
+#[derive(Debug)]
+pub struct CpuSnapshot {
+    pub name: String,
+    pub sample: CpuSample,
     /// False when live performance counters were unavailable and
     /// `per_core_mhz` holds the static base clock instead.
     pub live_clocks: bool,
@@ -57,9 +64,11 @@ impl CpuSensor {
                 .first()
                 .map(|c| c.brand().trim().to_string())
                 .unwrap_or_else(|| "unknown CPU".to_string()),
-            usage_pct: self.sys.global_cpu_usage(),
-            per_core_mhz,
-            per_core_usage: self.sys.cpus().iter().map(|c| c.cpu_usage()).collect(),
+            sample: CpuSample {
+                usage_pct: self.sys.global_cpu_usage(),
+                per_core_mhz,
+                per_core_usage: self.sys.cpus().iter().map(|c| c.cpu_usage()).collect(),
+            },
             live_clocks,
             ram_used_mib: self.sys.used_memory() / (1024 * 1024),
             ram_total_mib: self.sys.total_memory() / (1024 * 1024),

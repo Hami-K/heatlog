@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Local, Utc};
 use serde::{Deserialize, Serialize};
 
+pub use crate::sensors::cpu::CpuSample;
 use crate::sensors::cpu::CpuSnapshot;
-use crate::sensors::gpu::GpuSnapshot;
+pub use crate::sensors::gpu::GpuSample;
 
 /// First line of every session file; per-sample lines follow.
 #[derive(Debug, Serialize, Deserialize)]
@@ -31,50 +32,18 @@ pub struct Sample {
     pub ram_used_mib: u64,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct CpuSample {
-    pub usage_pct: f32,
-    pub per_core_mhz: Vec<u64>,
-    pub per_core_usage: Vec<f32>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct GpuSample {
-    pub temp_c: u32,
-    pub core_mhz: u32,
-    pub mem_mhz: u32,
-    pub util_pct: u32,
-    pub mem_util_pct: u32,
-    pub power_w: f64,
-    pub vram_used_mib: u64,
-    pub throttle: Vec<String>,
-}
-
 impl Sample {
     pub fn new(
         at: DateTime<Utc>,
         cpu: CpuSnapshot,
-        gpu: Option<GpuSnapshot>,
+        gpu: Option<GpuSample>,
         cpu_temp_c: Option<f32>,
     ) -> Self {
         Self {
             t_ms: at.timestamp_millis(),
             ram_used_mib: cpu.ram_used_mib,
-            cpu: CpuSample {
-                usage_pct: cpu.usage_pct,
-                per_core_mhz: cpu.per_core_mhz,
-                per_core_usage: cpu.per_core_usage,
-            },
-            gpu: gpu.map(|g| GpuSample {
-                temp_c: g.temp_c,
-                core_mhz: g.core_clock_mhz,
-                mem_mhz: g.mem_clock_mhz,
-                util_pct: g.gpu_util_pct,
-                mem_util_pct: g.mem_util_pct,
-                power_w: g.power_w,
-                vram_used_mib: g.vram_used_mib,
-                throttle: g.throttle_reasons,
-            }),
+            cpu: cpu.sample,
+            gpu,
             cpu_temp_c,
         }
     }

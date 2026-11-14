@@ -133,8 +133,8 @@ fn list_sessions(cfg: &config::Config) -> Result<()> {
 fn snapshot() -> Result<()> {
     println!("== GPU ==");
     match sensors::gpu::GpuSensor::new() {
-        Ok(gpu) => match gpu.read() {
-            Ok(s) => print_gpu(&s),
+        Ok(gpu) => match gpu.info().and_then(|info| Ok((info, gpu.read()?))) {
+            Ok((info, s)) => print_gpu(&info, &s),
             Err(e) => println!("GPU found but reading sensors failed: {e:#}"),
         },
         Err(_) => println!("GPU: unavailable (no NVIDIA driver/GPU detected on this machine)"),
@@ -157,34 +157,40 @@ fn snapshot() -> Result<()> {
     Ok(())
 }
 
-fn print_gpu(s: &sensors::gpu::GpuSnapshot) {
-    println!("Name:         {}", s.name);
+fn print_gpu(info: &sensors::gpu::GpuInfo, s: &sensors::gpu::GpuSample) {
+    println!("Name:         {}", info.name);
     println!("Temperature:  {} C", s.temp_c);
-    println!("Core clock:   {} MHz", s.core_clock_mhz);
-    println!("Memory clock: {} MHz", s.mem_clock_mhz);
+    println!("Core clock:   {} MHz", s.core_mhz);
+    println!("Memory clock: {} MHz", s.mem_mhz);
     println!(
         "Utilisation:  GPU {}%  /  memory bus {}%",
-        s.gpu_util_pct, s.mem_util_pct
+        s.util_pct, s.mem_util_pct
     );
     println!("Power draw:   {:.1} W", s.power_w);
     println!(
         "VRAM:         {} / {} MiB",
-        s.vram_used_mib, s.vram_total_mib
+        s.vram_used_mib, info.vram_total_mib
     );
-    if s.throttle_reasons.is_empty() {
+    if s.throttle.is_empty() {
         println!("Throttling:   none");
     } else {
-        println!("Throttling:   {}", s.throttle_reasons.join(", "));
+        println!("Throttling:   {}", s.throttle.join(", "));
     }
 }
 
 fn print_cpu(s: &sensors::cpu::CpuSnapshot) {
     println!("Name:         {}", s.name);
-    println!("Usage:        {:.1}%", s.usage_pct);
+    println!("Usage:        {:.1}%", s.sample.usage_pct);
     if !s.live_clocks {
         println!("(live clock counters unavailable; showing static base clock)");
     }
-    for (i, (mhz, usage)) in s.per_core_mhz.iter().zip(&s.per_core_usage).enumerate() {
+    for (i, (mhz, usage)) in s
+        .sample
+        .per_core_mhz
+        .iter()
+        .zip(&s.sample.per_core_usage)
+        .enumerate()
+    {
         println!("  core {i:>2}:    {mhz:>5} MHz  {usage:>5.1}%");
     }
     println!("RAM:          {} / {} MiB", s.ram_used_mib, s.ram_total_mib);

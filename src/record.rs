@@ -59,7 +59,7 @@ pub fn run(
         ),
     }
 
-    let gpu_info = gpu.as_ref().and_then(|g| g.read().ok());
+    let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
     let meta = SessionMeta {
         started: Local::now(),
         interval_secs,
@@ -97,7 +97,7 @@ pub fn run(
         let temp = temp_source.as_mut().and_then(|s| s.read_c().ok());
         print_status(
             count + 1,
-            &cpu_snap.usage_pct,
+            cpu_snap.sample.usage_pct,
             gpu_snap.as_ref().map(|g| g.temp_c),
             temp,
         );
@@ -119,7 +119,7 @@ pub fn run(
     Ok(())
 }
 
-fn print_status(n: u64, cpu_pct: &f32, gpu_temp: Option<u32>, cpu_temp: Option<f32>) {
+fn print_status(n: u64, cpu_pct: f32, gpu_temp: Option<u32>, cpu_temp: Option<f32>) {
     let gpu = match gpu_temp {
         Some(t) => format!("GPU {t} C"),
         None => "GPU n/a".to_string(),
