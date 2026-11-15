@@ -134,7 +134,7 @@ These are read off the recording, so they are labelled as possibilities
 rather than findings.
 
 To name a background program, heatlog records the busiest few processes
-with each sample. That means program names are written into the recording
+every few seconds. That means program names are written into the recording
 files **on this PC**, and nothing is ever sent anywhere. If you would rather
 record hardware readings only, untick **Record which programs were busy**
 in Settings, or set `record_processes = false` in the config file. Reports
