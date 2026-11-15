@@ -16,12 +16,26 @@ jobs:
       - name: Build installer
         run: |
           $version = $env:GITHUB_REF_NAME.TrimStart('v')
-          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=$version installer\heatlog.iss
+          $iscc = Get-ChildItem "C:\Program Files*\Inno Setup 6\ISCC.exe" |
+            Select-Object -First 1 -ExpandProperty FullName
+          & $iscc /DAppVersion=$version installer\heatlog.iss
+      - name: Publish checksums
+        run: |
+          $files = "installer\dist\heatlog-setup.exe",
+                   "target\release\heatlog-gui.exe",
+                   "target\release\heatlog.exe"
+          $lines = foreach ($f in $files) {
+            "{0}  {1}" -f (Get-FileHash $f -Algorithm SHA256).Hash.ToLower(), (Split-Path $f -Leaf)
+          }
+          $lines | Set-Content -Encoding ascii SHA256SUMS.txt
+          Get-Content SHA256SUMS.txt
       # Notes are written when the release is created; this only attaches
-      # the installer and the portable binaries.
+      # the installer, the portable binaries and their checksums, which the
+      # in-app updater verifies a download against before running it.
       - uses: softprops/action-gh-release@v2
         with:
           files: |
             installer/dist/heatlog-setup.exe
             target/release/heatlog-gui.exe
             target/release/heatlog.exe
+            SHA256SUMS.txt

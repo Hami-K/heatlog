@@ -291,8 +291,8 @@ impl App {
     /// files it replaces are not in use. Without an installer asset (a
     /// portable build) the release page opens instead.
     fn start_update(&mut self, ctx: &egui::Context, available: &heatlog::update::Available) {
-        match &available.installer_url {
-            Some(url) => match heatlog::update::run_installer(url) {
+        match &available.installer {
+            Some(_) => match heatlog::update::run_installer(available) {
                 Ok(_) => {
                     self.status = Some("Installer started - heatlog will close".to_string());
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);

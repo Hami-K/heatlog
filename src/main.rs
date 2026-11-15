@@ -111,7 +111,7 @@ fn update() -> Result<()> {
         ""
     };
     println!("Update available: {}{kind}", available.version);
-    let Some(url) = &available.installer_url else {
+    let Some(installer) = &available.installer else {
         println!("No installer in that release. See {}", available.page_url);
         return Ok(());
     };
@@ -124,7 +124,11 @@ fn update() -> Result<()> {
         println!("Left alone.");
         return Ok(());
     }
-    let path = heatlog::update::run_installer(url)?;
+    println!(
+        "Downloading {} and checking its published SHA-256...",
+        installer.name
+    );
+    let path = heatlog::update::run_installer(&available)?;
     println!("Installer started from {}", path.display());
     Ok(())
 }
