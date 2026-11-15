@@ -10,3 +10,6 @@ LEARNING.md
 # OS / editor noise
 Thumbs.db
 .DS_Store
+
+# Installer output
+/installer/dist

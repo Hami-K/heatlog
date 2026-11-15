@@ -13,8 +13,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: cargo build --release
+      - name: Build installer
+        run: |
+          $version = $env:GITHUB_REF_NAME.TrimStart('v')
+          & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" /DAppVersion=$version installer\heatlog.iss
       # Notes are written when the release is created; this only attaches
-      # the built binary.
+      # the installer and the portable binaries.
       - uses: softprops/action-gh-release@v2
         with:
-          files: target/release/heatlog.exe
+          files: |
+            installer/dist/heatlog-setup.exe
+            target/release/heatlog-gui.exe
+            target/release/heatlog.exe
