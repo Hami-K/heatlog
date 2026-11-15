@@ -66,6 +66,12 @@ impl Sensors {
         self.temp_source.as_ref().map(|s| s.label())
     }
 
+    /// Looks for a temperature source again, after the user has started or
+    /// configured one.
+    pub fn reprobe_temp(&mut self, lhm_url: &str) {
+        self.temp_source = cpu_temp::detect(lhm_url);
+    }
+
     /// Reads all sensors once. Call at the sampling interval; shorter gaps
     /// make the delta-based counters meaningless.
     pub fn read_sample(&mut self) -> Sample {

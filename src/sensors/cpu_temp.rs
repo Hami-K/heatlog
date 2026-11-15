@@ -2,34 +2,76 @@ use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
-use anyhow::{bail, ensure, Context, Result};
-use serde::Deserialize;
+use anyhow::{bail, Context, Result};
 use serde_json::Value;
-use wmi::{COMLibrary, WMIConnection};
+use sysinfo::{ProcessesToUpdate, System};
 
-/// Windows exposes CPU temperature inconsistently, so sources are probed in
-/// order and the whole feature degrades to "unavailable" rather than failing.
+use super::hwinfo::HwInfoShm;
+
+/// Windows gives no unprivileged API for CPU temperature, so heatlog borrows
+/// the reading from a monitoring app that already has a signed driver.
+/// Sources are probed in order and the whole feature degrades to
+/// "unavailable" rather than failing.
 pub trait CpuTempSource {
     fn label(&self) -> &'static str;
     fn read_c(&mut self) -> Result<f32>;
 }
 
 /// Returns the first source that produces a plausible reading right now:
-/// LibreHardwareMonitor's web server if it is running, then the ACPI thermal
-/// zone via WMI (often absent or access-denied without admin), else None.
+/// HWiNFO's shared memory, then LibreHardwareMonitor's web server.
 pub fn detect(lhm_url: &str) -> Option<Box<dyn CpuTempSource>> {
+    if HwInfoShm::available() {
+        return Some(Box::new(HwInfoShm));
+    }
     let mut lhm = LhmWebServer {
         url: lhm_url.to_string(),
     };
     if lhm.read_c().is_ok() {
         return Some(Box::new(lhm));
     }
-    if let Ok(mut zone) = WmiThermalZone::new() {
-        if zone.read_c().is_ok() {
-            return Some(Box::new(zone));
-        }
-    }
     None
+}
+
+/// What the setup page needs to tell the user where they stand.
+pub struct Availability {
+    pub source: Option<&'static str>,
+    pub hwinfo_running: bool,
+    pub hwinfo_sharing: bool,
+    pub lhm_running: bool,
+    pub lhm_web: bool,
+}
+
+pub fn availability(lhm_url: &str) -> Availability {
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    let running = |needle: &str| {
+        sys.processes().values().any(|process| {
+            process
+                .name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .contains(needle)
+        })
+    };
+    let hwinfo_sharing = HwInfoShm::available();
+    let lhm_web = LhmWebServer {
+        url: lhm_url.to_string(),
+    }
+    .read_c()
+    .is_ok();
+    Availability {
+        source: if hwinfo_sharing {
+            Some("HWiNFO")
+        } else if lhm_web {
+            Some("LibreHardwareMonitor")
+        } else {
+            None
+        },
+        hwinfo_running: running("hwinfo"),
+        hwinfo_sharing,
+        lhm_running: running("librehardwaremonitor"),
+        lhm_web,
+    }
 }
 
 struct LhmWebServer {
@@ -133,50 +175,4 @@ fn http_get(url: &str) -> Result<String> {
         bail!("unexpected HTTP status: {status}");
     }
     Ok(body.to_string())
-}
-
-#[derive(Deserialize)]
-#[serde(rename = "MSAcpi_ThermalZoneTemperature")]
-#[serde(rename_all = "PascalCase")]
-struct ThermalZone {
-    current_temperature: u32,
-}
-
-struct WmiThermalZone {
-    wmi: WMIConnection,
-}
-
-impl WmiThermalZone {
-    fn new() -> Result<Self> {
-        let com = COMLibrary::new().context("initialising COM")?;
-        let wmi = WMIConnection::with_namespace_path("root\\WMI", com)
-            .context("connecting to root\\WMI")?;
-        Ok(Self { wmi })
-    }
-}
-
-impl CpuTempSource for WmiThermalZone {
-    fn label(&self) -> &'static str {
-        "ACPI thermal zone"
-    }
-
-    fn read_c(&mut self) -> Result<f32> {
-        let zones: Vec<ThermalZone> = self
-            .wmi
-            .query()
-            .context("querying MSAcpi_ThermalZoneTemperature")?;
-        // Thermal zones cover the whole board; the hottest is the closest
-        // stand-in for the CPU. Values are tenths of a kelvin.
-        let hottest = zones
-            .iter()
-            .map(|z| z.current_temperature)
-            .max()
-            .context("no thermal zones reported")?;
-        let celsius = hottest as f32 / 10.0 - 273.15;
-        ensure!(
-            (0.0..=120.0).contains(&celsius),
-            "implausible reading: {celsius} C"
-        );
-        Ok(celsius)
-    }
 }
