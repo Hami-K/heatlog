@@ -179,14 +179,20 @@ impl ChartData {
             hi += 1.0;
         }
         let pad = (hi - lo) * 0.05;
+        // Headroom above the highest point, measured against the span that
+        // is actually drawn. Without it a line whose values barely vary
+        // (CPU clocks sitting near 5 GHz) is pinned to the top edge with
+        // no room for its hover readout.
+        const HEADROOM: f64 = 0.08;
         match self.y {
+            // Fixed scales stay fixed: 0-100% means 0-100%.
             YAxis::Pct => (0.0, 100.0, None),
-            YAxis::FromZero => (0.0, hi + pad, None),
-            YAxis::Temp { hot_from } => (
-                (lo - pad).min(40.0),
-                (hi + pad).max(hot_from + 10.0),
-                Some(hot_from),
-            ),
+            YAxis::FromZero => (0.0, hi * (1.0 + HEADROOM), None),
+            YAxis::Temp { hot_from } => {
+                let lo = (lo - pad).min(40.0);
+                let hi = (hi + pad).max(hot_from + 10.0);
+                (lo, hi + (hi - lo) * HEADROOM, Some(hot_from))
+            }
         }
     }
 }
@@ -271,6 +277,42 @@ mod tests {
     fn downsample_leaves_short_series_alone() {
         let points: Vec<(f64, f64)> = (0..100).map(|i| (i as f64, i as f64)).collect();
         assert_eq!(downsample(&points, 1200), points);
+    }
+
+    fn chart(points: Vec<(f64, f64)>, y: YAxis) -> ChartData {
+        ChartData {
+            title: "test",
+            unit: "",
+            explain: String::new(),
+            points,
+            bands: Vec::new(),
+            band_class: "cpu",
+            y,
+        }
+    }
+
+    #[test]
+    fn a_flat_line_near_its_maximum_still_gets_headroom() {
+        // CPU clocks hovering just above 5 GHz: the span is tiny, so
+        // padding by the span alone left the line on the top edge.
+        let clocks = chart(vec![(0.0, 5.02), (1.0, 5.17), (2.0, 5.10)], YAxis::FromZero);
+        let (lo, hi, hot) = clocks.y_domain();
+        assert_eq!(lo, 0.0);
+        assert!(hi > 5.17 * 1.05, "no headroom above the peak: {hi}");
+        assert!(hot.is_none());
+
+        // Temperatures get headroom too, above the hot line if need be.
+        let temps = chart(
+            vec![(0.0, 88.0), (1.0, 92.0)],
+            YAxis::Temp { hot_from: 85.0 },
+        );
+        let (_, hi, hot) = temps.y_domain();
+        assert!(hi > 92.0 * 1.05, "no headroom above the peak: {hi}");
+        assert_eq!(hot, Some(85.0));
+
+        // A fixed scale stays fixed.
+        let usage = chart(vec![(0.0, 99.0)], YAxis::Pct);
+        assert_eq!(usage.y_domain(), (0.0, 100.0, None));
     }
 
     #[test]

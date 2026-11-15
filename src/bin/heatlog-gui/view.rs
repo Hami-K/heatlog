@@ -236,16 +236,27 @@ pub fn hover_nearest(
     // pointer rests on it, which costs more than the whole dashboard.
     let bounds = plot_ui.plot_bounds();
     let span = (bounds.max()[0] - bounds.min()[0]).max(1e-9);
-    let height = bounds.max()[1] - bounds.min()[1];
-    // Flip the label to the left near the right edge so it stays readable.
-    let anchor = if (nearest[0] - bounds.min()[0]) / span > 0.7 {
-        egui::Align2::RIGHT_BOTTOM
+    let height = (bounds.max()[1] - bounds.min()[1]).max(1e-9);
+    // The readout is drawn inside the plot, so it has to dodge the edges:
+    // to the left of a point near the right edge, and below a point near
+    // the top, where there is no room above it.
+    let near_right = (nearest[0] - bounds.min()[0]) / span > 0.7;
+    let near_top = (nearest[1] - bounds.min()[1]) / height > 0.85;
+    let anchor = match (near_right, near_top) {
+        (false, false) => egui::Align2::LEFT_BOTTOM,
+        (true, false) => egui::Align2::RIGHT_BOTTOM,
+        (false, true) => egui::Align2::LEFT_TOP,
+        (true, true) => egui::Align2::RIGHT_TOP,
+    };
+    let offset = height * 0.04;
+    let y = if near_top {
+        nearest[1] - offset
     } else {
-        egui::Align2::LEFT_BOTTOM
+        nearest[1] + offset
     };
     plot_ui.text(
         Text::new(
-            PlotPoint::new(nearest[0], nearest[1] + height * 0.04),
+            PlotPoint::new(nearest[0], y),
             RichText::new(text).size(12.0).color(ui_strong(plot_ui)),
         )
         .anchor(anchor),
