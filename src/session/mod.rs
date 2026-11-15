@@ -153,6 +153,57 @@ pub fn list_files(dir: &Path) -> Result<Vec<PathBuf>> {
     Ok(files.into_iter().map(|(_, path)| path).collect())
 }
 
+/// Bytes used by session files and their exported reports.
+pub fn total_bytes(dir: &Path) -> u64 {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .filter_map(|entry| entry.ok()?.metadata().ok())
+        .filter(|meta| meta.is_file())
+        .map(|meta| meta.len())
+        .sum()
+}
+
+/// Removes a session and any HTML report exported beside it. Goes to the
+/// Recycle Bin when Windows allows it, deleting outright only if that
+/// fails (callers warn about that case).
+pub fn delete(path: &Path) -> Result<()> {
+    let report = path.with_extension("html");
+    for file in [path, &report] {
+        if !file.exists() {
+            continue;
+        }
+        if trash::delete(file).is_err() {
+            fs::remove_file(file).with_context(|| format!("deleting {}", file.display()))?;
+        }
+    }
+    Ok(())
+}
+
+/// Deletes sessions last written more than `days` days ago; 0 means never.
+/// Returns how many were removed.
+pub fn delete_older_than(dir: &Path, days: u64) -> Result<usize> {
+    if days == 0 {
+        return Ok(0);
+    }
+    let cutoff = std::time::SystemTime::now()
+        .checked_sub(std::time::Duration::from_secs(days * 24 * 60 * 60))
+        .context("age limit is too large")?;
+    let mut removed = 0;
+    for path in list_files(dir)? {
+        let stale = path
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .is_ok_and(|modified| modified < cutoff);
+        if stale {
+            delete(&path)?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
 pub struct SessionWriter {
     out: BufWriter<File>,
     path: PathBuf,
@@ -305,6 +356,22 @@ mod tests {
         let files = list_files(&dir).unwrap();
         let newest = files.last().unwrap().file_name().unwrap().to_string_lossy();
         assert_eq!(newest, "2026-01-01_00-00-00.jsonl");
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn deleting_a_session_takes_its_exported_report_with_it() {
+        let dir = temp_dir("delete");
+        let session = dir.join("2026-01-01_00-00-00.jsonl");
+        let report = dir.join("2026-01-01_00-00-00.html");
+        fs::write(&session, "{}").unwrap();
+        fs::write(&report, "<html>").unwrap();
+
+        delete(&session).unwrap();
+        assert!(!session.exists(), "session file still there");
+        assert!(!report.exists(), "exported report left behind");
+        // Deleting a session that is already gone is not an error.
+        delete(&session).unwrap();
         fs::remove_dir_all(&dir).ok();
     }
 
