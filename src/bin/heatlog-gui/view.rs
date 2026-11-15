@@ -4,7 +4,7 @@
 use std::path::{Path, PathBuf};
 
 use eframe::egui::{self, Color32, RichText};
-use egui_plot::{HLine, Line, Plot, PlotPoints, Points, Polygon};
+use egui_plot::{HLine, Line, Plot, PlotPoint, PlotPoints, Points, Polygon, Text};
 
 use heatlog::report::charts::{self};
 use heatlog::report::{self, fmt_time, Series, Summary};
@@ -230,17 +230,31 @@ pub fn hover_nearest(
         }
         TimeFmt::Offset => fmt_time(nearest[0].max(0.0) as u64),
     };
-    let text = format!("{when} · {}", (phrase)(nearest[1]));
-    egui::show_tooltip_at_pointer(
-        plot_ui.ctx(),
-        egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("plot-tip-layer")),
-        egui::Id::new("plot-tip"),
-        |ui| {
-            // One line, sized to content: the default tooltip width made
-            // the text wrap mid-number.
-            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
-        },
+    let text = format!("{when} - {}", (phrase)(nearest[1]));
+    // Drawn inside the plot rather than as an egui tooltip: a tooltip is a
+    // floating layer that animates and keeps asking for repaints while the
+    // pointer rests on it, which costs more than the whole dashboard.
+    let bounds = plot_ui.plot_bounds();
+    let span = (bounds.max()[0] - bounds.min()[0]).max(1e-9);
+    let height = bounds.max()[1] - bounds.min()[1];
+    // Flip the label to the left near the right edge so it stays readable.
+    let anchor = if (nearest[0] - bounds.min()[0]) / span > 0.7 {
+        egui::Align2::RIGHT_BOTTOM
+    } else {
+        egui::Align2::LEFT_BOTTOM
+    };
+    plot_ui.text(
+        Text::new(
+            PlotPoint::new(nearest[0], nearest[1] + height * 0.04),
+            RichText::new(text).size(12.0).color(ui_strong(plot_ui)),
+        )
+        .anchor(anchor),
     );
+}
+
+/// The theme's strong text colour, for labels drawn inside a plot.
+fn ui_strong(plot_ui: &egui_plot::PlotUi) -> Color32 {
+    plot_ui.ctx().style().visuals.strong_text_color()
 }
 
 fn technical_ui(ui: &mut egui::Ui, s: &Summary) {
