@@ -178,8 +178,8 @@ you opt in.
 
 ## Overhead
 
-Measured while monitoring at one sample per second (release build, Intel Core
-i9-13900H, Windows 11):
+Measured while monitoring at one sample per second, on a release build
+running on a 20-thread laptop CPU under Windows 11:
 
 | | CPU | Memory |
 |---|---|---|
