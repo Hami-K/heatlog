@@ -1,6 +1,6 @@
 [package]
 name = "heatlog"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 description = "Records hardware stats while you game and reports throttling afterwards"
 repository = "https://github.com/Hami-K/heatlog"
