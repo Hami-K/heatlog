@@ -102,7 +102,7 @@ pub fn cpu(ui: &mut egui::Ui, app: &App) {
         ));
         stats.push(("Logical processors", s.cpu.per_core_mhz.len().to_string()));
         match s.cpu_temp_c {
-            Some(t) => stats.push(("Temperature", format!("{t:.0} C"))),
+            Some(t) => stats.push(("Temperature", format!("{t:.0} °C"))),
             None => stats.push(("Temperature", "unavailable - see Settings".to_string())),
         }
     } else {
@@ -118,11 +118,11 @@ pub fn gpu(ui: &mut egui::Ui, app: &App) {
             ui.heading(format!("{}  {name}", icons::GRAPHICS_CARD));
             ui.add_space(6.0);
             live_plot(ui, "gpu", &app.hist.gpu_temp_c, Some(100.0), |v| {
-                format!("GPU {v:.0} C")
+                format!("GPU {v:.0} °C")
             });
             ui.add_space(10.0);
             let stats = vec![
-                ("Temperature", format!("{} C", g.temp_c)),
+                ("Temperature", format!("{} °C", g.temp_c)),
                 ("Utilization", format!("{}%", g.util_pct)),
                 (
                     "Speed",
@@ -243,7 +243,7 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
     ui.heading(format!("{}  Overview", icons::GAUGE));
     ui.add_space(6.0);
 
-    let (color, icon, word, detail) = health(app);
+    let health = health(app);
     let needs_setup = app
         .info
         .as_ref()
@@ -252,15 +252,19 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
         // The row must be a horizontal first: a bare right-to-left layout
         // would claim the panel's whole height and push the page off.
         ui.horizontal(|ui| {
-            ui.label(RichText::new(icon).size(22.0).color(color));
-            ui.label(RichText::new(word).strong().size(16.0));
+            ui.label(
+                RichText::new(health.icon())
+                    .size(22.0)
+                    .color(health.color()),
+            );
+            ui.label(RichText::new(&health.word).strong().size(16.0));
             // Button goes in the right-aligned remainder before the detail
             // text, so the text truncates instead of running underneath.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if needs_setup && ui.button("Set up").clicked() {
+                if needs_setup && ui.button("Set up CPU temp").clicked() {
                     nav = Some(crate::Page::TempSetup);
                 }
-                ui.add(egui::Label::new(RichText::new(detail).weak()).truncate());
+                ui.add(egui::Label::new(RichText::new(&health.detail).weak()).truncate());
             });
         });
     });
@@ -305,7 +309,7 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
                 gauges.push(G {
                     frac: temp_frac(f64::from(temp)),
                     color: heat_color(temp_frac(f64::from(temp))),
-                    center: format!("{temp:.0} C"),
+                    center: format!("{temp:.0} °C"),
                     label: "GPU temp",
                 });
             }
@@ -314,7 +318,7 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
                 gauges.push(G {
                     frac: temp_frac(f64::from(temp)),
                     color: heat_color(temp_frac(f64::from(temp))),
-                    center: format!("{temp:.0} C"),
+                    center: format!("{temp:.0} °C"),
                     label: "CPU temp",
                 });
             }
@@ -359,7 +363,7 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
                         ui.horizontal(|ui| {
                             verdict_pill(ui, extra.class);
                             if let Some(t) = extra.gpu_peak_c {
-                                ui.label(RichText::new(format!("GPU peak {t:.0} C")).weak());
+                                ui.label(RichText::new(format!("GPU peak {t:.0} °C")).weak());
                             }
                         });
                     }
@@ -433,50 +437,122 @@ fn activity_chart(ui: &mut egui::Ui, app: &App) {
         });
 }
 
-fn health(app: &App) -> (Color32, &'static str, &'static str, String) {
-    let Some(s) = &app.latest else {
-        return (
-            Color32::GRAY,
-            icons::HOURGLASS,
-            "Starting",
-            "waiting for the first sensor read".to_string(),
-        );
-    };
-    let gpu_temp = s.gpu.as_ref().map(|g| g.temp_c);
-    let throttling = s.gpu.as_ref().is_some_and(|g| !g.throttle.is_empty());
-    let cpu_temp = s.cpu_temp_c;
+pub struct Health {
+    /// "starting", "none", "cool", "warm", "hot".
+    pub level: &'static str,
+    pub word: String,
+    pub detail: String,
+}
 
+impl Health {
+    fn color(&self) -> Color32 {
+        match self.level {
+            "cool" => GREEN,
+            "warm" => AMBER,
+            "hot" => RED,
+            _ => Color32::GRAY,
+        }
+    }
+
+    fn icon(&self) -> &'static str {
+        match self.level {
+            "cool" => icons::SNOWFLAKE,
+            "hot" => icons::FLAME,
+            "starting" => icons::HOURGLASS,
+            _ => icons::THERMOMETER,
+        }
+    }
+}
+
+/// The banner never claims more than it knows: it names which chip it is
+/// talking about when the other one has no sensor, and only says
+/// temperatures look fine when every source this machine should have is
+/// actually reporting.
+fn health_of(
+    gpu_temp: Option<f64>,
+    cpu_temp: Option<f64>,
+    throttling: bool,
+    gpu_present: bool,
+) -> Health {
+    let missing_cpu = cpu_temp.is_none();
+    let missing_gpu = gpu_present && gpu_temp.is_none();
     if gpu_temp.is_none() && cpu_temp.is_none() {
-        // No temperature source at all: saying "fine" would be a guess.
-        return (
-            Color32::GRAY,
-            icons::THERMOMETER,
-            "Temperatures unavailable",
-            "set up a sensor source to see them".to_string(),
-        );
-    }
-    if throttling || gpu_temp.is_some_and(|t| t >= 85) || cpu_temp.is_some_and(|t| t >= 90.0) {
-        let why = if throttling {
-            "the GPU is slowing itself down".to_string()
-        } else {
-            "temperatures at throttle levels".to_string()
+        return Health {
+            level: "none",
+            word: "Temperatures unavailable".to_string(),
+            detail: "set up a sensor source to see them".to_string(),
         };
-        (RED, icons::FLAME, "Too hot - slowing down", why)
-    } else if gpu_temp.is_some_and(|t| t >= 75) || cpu_temp.is_some_and(|t| t >= 80.0) {
-        (
-            AMBER,
-            icons::THERMOMETER,
-            "Getting warm",
-            "elevated but still safe".to_string(),
-        )
-    } else {
-        (
-            GREEN,
-            icons::SNOWFLAKE,
-            "Running cool",
-            "temperatures look fine".to_string(),
-        )
     }
+
+    // Which chip the reading actually describes, when only one is known.
+    let subject = match (gpu_temp.is_some(), cpu_temp.is_some()) {
+        (true, false) => "GPU ",
+        (false, true) => "CPU ",
+        _ => "",
+    };
+    let gap = if missing_cpu {
+        Some("CPU temperature not set up")
+    } else if missing_gpu {
+        Some("GPU temperature not reporting")
+    } else {
+        None
+    };
+
+    let (level, word, reading) =
+        if throttling || gpu_temp.is_some_and(|t| t >= 85.0) || cpu_temp.is_some_and(|t| t >= 90.0)
+        {
+            let why = if throttling {
+                "the GPU is slowing itself down"
+            } else {
+                "temperatures at throttle levels"
+            };
+            ("hot", format!("{subject}too hot - slowing down"), why)
+        } else if gpu_temp.is_some_and(|t| t >= 75.0) || cpu_temp.is_some_and(|t| t >= 80.0) {
+            (
+                "warm",
+                format!("{subject}getting warm"),
+                "elevated but still safe",
+            )
+        } else {
+            (
+                "cool",
+                format!("{subject}running cool"),
+                "temperatures look fine",
+            )
+        };
+
+    let mut word = word;
+    // Sentence case, since the subject may be an acronym or nothing.
+    if subject.is_empty() {
+        let mut chars = word.chars();
+        if let Some(first) = chars.next() {
+            word = first.to_uppercase().collect::<String>() + chars.as_str();
+        }
+    }
+    Health {
+        level,
+        word,
+        detail: match gap {
+            Some(gap) => gap.to_string(),
+            None => reading.to_string(),
+        },
+    }
+}
+
+fn health(app: &App) -> Health {
+    let Some(s) = &app.latest else {
+        return Health {
+            level: "starting",
+            word: "Starting".to_string(),
+            detail: "waiting for the first sensor read".to_string(),
+        };
+    };
+    health_of(
+        s.gpu.as_ref().map(|g| f64::from(g.temp_c)),
+        s.cpu_temp_c.map(f64::from),
+        s.gpu.as_ref().is_some_and(|g| !g.throttle.is_empty()),
+        app.info.as_ref().is_some_and(|i| i.gpu_name.is_some()),
+    )
 }
 
 // ------------------------------------------------- CPU temperature setup
@@ -492,7 +568,17 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
     ui.heading(format!("{}  Set up CPU temperature", icons::THERMOMETER));
     ui.add_space(6.0);
 
-    let avail = app.info.as_ref().map(|i| &i.avail);
+    // Copied out rather than borrowed: the cards below need &mut app.
+    let (hwinfo_sharing, hwinfo_running, lhm_web, lhm_running, lhm_path) = match &app.info {
+        Some(info) => (
+            info.avail.hwinfo_sharing,
+            info.avail.hwinfo_running,
+            info.avail.lhm_web,
+            info.avail.lhm_running,
+            info.avail.lhm_path.clone(),
+        ),
+        None => (false, false, false, false, None),
+    };
     if let Some(source) = app.info.as_ref().and_then(|i| i.cpu_temp_source) {
         card(ui, |ui| {
             ui.label(
@@ -518,25 +604,21 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
 
     card(ui, |ui| {
         ui.label(RichText::new("HWiNFO (recommended)").strong().size(15.0));
-        match avail {
-            Some(a) if a.hwinfo_sharing => {
-                ui.label(
-                    RichText::new(format!("{}  Running and sharing sensors.", icons::CHECK))
-                        .color(GREEN),
-                );
-            }
-            Some(a) if a.hwinfo_running => {
-                ui.label(
-                    RichText::new(format!(
-                        "{}  Running, but not sharing sensors yet.",
-                        icons::WARNING
-                    ))
-                    .color(AMBER),
-                );
-            }
-            _ => {
-                ui.label(RichText::new("Not running.").weak());
-            }
+        if hwinfo_sharing {
+            ui.label(
+                RichText::new(format!("{}  Running and sharing sensors.", icons::CHECK))
+                    .color(GREEN),
+            );
+        } else if hwinfo_running {
+            ui.label(
+                RichText::new(format!(
+                    "{}  Running, but not sharing sensors yet.",
+                    icons::WARNING
+                ))
+                .color(AMBER),
+            );
+        } else {
+            ui.label(RichText::new("Not running.").weak());
         }
         ui.add_space(4.0);
         ui.label(
@@ -547,11 +629,39 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
             .weak()
             .small(),
         );
-        if ui
-            .button(format!("{}  Install HWiNFO", icons::DOWNLOAD_SIMPLE))
-            .clicked()
-        {
-            app.status = Some(install_hwinfo());
+        ui.horizontal(|ui| {
+            ui.add_enabled_ui(!app.installing, |ui| {
+                if ui
+                    .button(format!("{}  Install HWiNFO", icons::DOWNLOAD_SIMPLE))
+                    .clicked()
+                {
+                    app.start_hwinfo_install();
+                }
+            });
+            if app.installing {
+                ui.label(RichText::new("installing, this takes a minute...").weak());
+            }
+        });
+        if let Some(error) = &app.install_error {
+            ui.label(
+                RichText::new("Automatic install didn't work - download HWiNFO from its official site instead.")
+                    .color(AMBER),
+            );
+            ui.label(RichText::new(error).weak().small());
+            if ui
+                .button(format!(
+                    "{}  Open hwinfo.com download page",
+                    icons::ARROW_SQUARE_OUT
+                ))
+                .clicked()
+            {
+                open_url(HWINFO_DOWNLOAD);
+            }
+            ui.label(
+                RichText::new("Pick the installer version, not the portable one.")
+                    .weak()
+                    .small(),
+            );
         }
         ui.add_space(6.0);
         ui.label("Then, in HWiNFO:");
@@ -575,30 +685,76 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
                 .strong()
                 .size(15.0),
         );
-        match avail {
-            Some(a) if a.lhm_web => {
+        if lhm_web {
+            ui.label(
+                RichText::new(format!("{}  Web server reachable.", icons::CHECK)).color(GREEN),
+            );
+        } else if lhm_running {
+            ui.label(
+                RichText::new(format!(
+                    "{}  Running, but its web server is off.",
+                    icons::WARNING
+                ))
+                .color(AMBER),
+            );
+        } else {
+            ui.label(RichText::new("Not running.").weak());
+        }
+        ui.add_space(4.0);
+        match lhm_path.as_ref() {
+            Some(path) => {
                 ui.label(
-                    RichText::new(format!("{}  Web server reachable.", icons::CHECK)).color(GREEN),
+                    RichText::new(
+                        "Windows will ask for admin permission, because LibreHardwareMonitor \
+                         needs it to read sensors.",
+                    )
+                    .weak()
+                    .small(),
                 );
-            }
-            Some(a) if a.lhm_running => {
+                let path = path.clone();
+                if ui
+                    .button(format!("{}  Start LibreHardwareMonitor", icons::PLAY))
+                    .clicked()
+                {
+                    match start_lhm(&path) {
+                        Ok(()) => {
+                            app.status = Some(
+                                "Starting LibreHardwareMonitor - accept the admin prompt."
+                                    .to_string(),
+                            )
+                        }
+                        Err(e) => app.error = Some(e),
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label("Then, once it is open:");
+                ui.label("1.  Options > Remote Web Server > Run, and leave it running.");
                 ui.label(
-                    RichText::new(format!(
-                        "{}  Running, but its web server is off.",
-                        icons::WARNING
-                    ))
-                    .color(AMBER),
+                    RichText::new(
+                        "Windows Firewall may ask about network access. Blocking it is fine: \
+                         heatlog only reads from this PC.",
+                    )
+                    .weak()
+                    .small(),
                 );
             }
             _ => {
-                ui.label(RichText::new("Not running.").weak());
+                ui.label("Not installed, or heatlog could not find it. To install it:");
+                ui.label(
+                    RichText::new("winget install LibreHardwareMonitor.LibreHardwareMonitor")
+                        .monospace(),
+                );
+                ui.label(
+                    RichText::new(
+                        "That package is portable: it adds no Start menu entry, and it has to \
+                         be run as administrator. Use Check again afterwards and heatlog will \
+                         offer to start it for you.",
+                    )
+                    .weak()
+                    .small(),
+                );
             }
         }
-        ui.add_space(4.0);
-        ui.label(
-            RichText::new("winget install LibreHardwareMonitor.LibreHardwareMonitor").monospace(),
-        );
-        ui.label("Then enable Options > Remote Web Server and leave it running.");
     });
     ui.add_space(10.0);
 
@@ -620,29 +776,62 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
 /// Installs through winget's official package, or falls back to HWiNFO's
 /// own download page. Runs in a visible console so the user can see the
 /// admin prompt and the progress.
-fn install_hwinfo() -> String {
-    let winget = std::process::Command::new("cmd")
+pub const HWINFO_DOWNLOAD: &str = "https://www.hwinfo.com/download/";
+
+/// Runs winget and reports what actually happened. winget's download can
+/// fail for reasons heatlog cannot fix (HWiNFO's site has answered 403),
+/// so the result is reported rather than assumed, with the official
+/// download page as the way out. No retrying.
+pub fn install_hwinfo() -> Result<(), String> {
+    let output = std::process::Command::new("winget")
         .args([
-            "/C",
-            "start",
-            "",
-            "cmd",
-            "/K",
-            "winget install --id REALiX.HWiNFO -e --accept-package-agreements \
-             --accept-source-agreements",
+            "install",
+            "--id",
+            "REALiX.HWiNFO",
+            "-e",
+            "--accept-package-agreements",
+            "--accept-source-agreements",
+            "--disable-interactivity",
         ])
-        .spawn();
-    match winget {
-        Ok(_) => "Installing HWiNFO in a new window - accept the admin prompt, then come \
-                  back and use Check again."
-            .to_string(),
-        Err(_) => {
-            let _ = std::process::Command::new("cmd")
-                .args(["/C", "start", "", "https://www.hwinfo.com/download/"])
-                .spawn();
-            "winget is not available, so HWiNFO's download page was opened instead.".to_string()
-        }
+        .output()
+        .map_err(|_| "winget is not available on this PC".to_string())?;
+    if output.status.success() {
+        return Ok(());
     }
+    // winget prints its diagnosis to stdout, not stderr.
+    let text = String::from_utf8_lossy(&output.stdout);
+    let reason = text
+        .lines()
+        .rev()
+        .find(|line| {
+            let line = line.trim();
+            !line.is_empty() && !line.starts_with(['-', '\\', '|', '/', '█'])
+        })
+        .unwrap_or("winget could not install HWiNFO")
+        .trim()
+        .to_string();
+    Err(reason)
+}
+
+pub fn open_url(url: &str) {
+    let _ = std::process::Command::new("cmd")
+        .args(["/C", "start", ""])
+        .arg(url)
+        .spawn();
+}
+
+/// Starts LibreHardwareMonitor with administrator rights, which it needs
+/// to read sensors. Returns the path it launched.
+pub fn start_lhm(path: &std::path::Path) -> Result<(), String> {
+    std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!("Start-Process -Verb RunAs -FilePath '{}'", path.display()),
+        ])
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("could not start LibreHardwareMonitor: {e}"))
 }
 
 // ---------------------------------------------------------------- recordings
@@ -892,10 +1081,10 @@ pub fn recordings(ui: &mut egui::Ui, app: &mut App) -> Option<PathBuf> {
                                     verdict_pill(ui, extra.class);
                                     let mut peaks = Vec::new();
                                     if let Some(t) = extra.gpu_peak_c {
-                                        peaks.push(format!("GPU peak {t:.0} C"));
+                                        peaks.push(format!("GPU peak {t:.0} °C"));
                                     }
                                     if let Some(t) = extra.cpu_peak_c {
-                                        peaks.push(format!("CPU peak {t:.0} C"));
+                                        peaks.push(format!("CPU peak {t:.0} °C"));
                                     }
                                     if !peaks.is_empty() {
                                         ui.label(RichText::new(peaks.join("  -  ")).weak());
@@ -1072,4 +1261,40 @@ pub fn settings(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
         ui.label(RichText::new(format!("Stored in {path}")).weak().small());
     });
     nav
+}
+
+#[cfg(test)]
+mod tests {
+    use super::health_of;
+
+    #[test]
+    fn a_missing_source_is_named_not_glossed_over() {
+        // GPU reporting, no CPU temperature source: say which is which.
+        let partial = health_of(Some(49.0), None, false, true);
+        assert_eq!(partial.level, "cool");
+        assert_eq!(partial.word, "GPU running cool");
+        assert_eq!(partial.detail, "CPU temperature not set up");
+
+        // Both present and cool: only then is the all-clear honest.
+        let full = health_of(Some(49.0), Some(67.0), false, true);
+        assert_eq!(full.word, "Running cool");
+        assert_eq!(full.detail, "temperatures look fine");
+
+        // CPU only, on a machine with no GPU at all: no phantom gap.
+        let cpu_only = health_of(None, Some(67.0), false, false);
+        assert_eq!(cpu_only.word, "CPU running cool");
+        assert_eq!(cpu_only.detail, "temperatures look fine");
+
+        // Nothing at all.
+        assert_eq!(health_of(None, None, false, false).level, "none");
+    }
+
+    #[test]
+    fn heat_still_wins_over_a_missing_source() {
+        let hot = health_of(Some(88.0), None, true, true);
+        assert_eq!(hot.level, "hot");
+        assert_eq!(hot.word, "GPU too hot - slowing down");
+        // The gap is still reported rather than the reason.
+        assert_eq!(hot.detail, "CPU temperature not set up");
+    }
 }

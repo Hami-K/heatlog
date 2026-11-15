@@ -208,6 +208,9 @@ pub struct App {
     pub confirm_delete_all: bool,
     pub update: Option<heatlog::update::Available>,
     update_rx: Receiver<Option<heatlog::update::Available>>,
+    pub installing: bool,
+    pub install_error: Option<String>,
+    install_rx: Option<Receiver<Result<(), String>>>,
 }
 
 impl App {
@@ -234,6 +237,9 @@ impl App {
             confirm_delete_all: false,
             update: None,
             update_rx,
+            installing: false,
+            install_error: None,
+            install_rx: None,
             status: (pruned > 0).then(|| format!("Deleted {pruned} old recording(s)")),
             info: None,
             latest: None,
@@ -249,6 +255,22 @@ impl App {
             recordings: pages::Recordings::load(&cc.egui_ctx),
             view: None,
         }
+    }
+
+    /// Installs HWiNFO on a thread of its own: winget takes a minute and
+    /// must not stall the window or the sampling loop.
+    pub fn start_hwinfo_install(&mut self) {
+        if self.installing {
+            return;
+        }
+        let (tx, rx) = std::sync::mpsc::channel();
+        self.installing = true;
+        self.install_error = None;
+        self.status = None;
+        self.install_rx = Some(rx);
+        std::thread::spawn(move || {
+            let _ = tx.send(pages::install_hwinfo());
+        });
     }
 
     pub fn send(&self, cmd: worker::Cmd) {
@@ -342,7 +364,14 @@ impl App {
     fn drain_events(&mut self, ctx: &egui::Context) {
         while let Ok(event) = self.events.try_recv() {
             match event {
-                worker::Event::Ready(info) => self.info = Some(*info),
+                worker::Event::Ready(info) => {
+                    // A fresh probe answers whatever the status line was
+                    // waiting for, so it must not linger.
+                    if self.recording.is_none() {
+                        self.status = None;
+                    }
+                    self.info = Some(*info);
+                }
                 worker::Event::Tick(sample) => {
                     push(&mut self.hist.cpu_pct, f64::from(sample.cpu.usage_pct));
                     push(
@@ -422,6 +451,26 @@ impl eframe::App for App {
         self.recordings.drain();
         if let Ok(found) = self.update_rx.try_recv() {
             self.update = found;
+        }
+        if let Some(rx) = &self.install_rx {
+            if let Ok(result) = rx.try_recv() {
+                self.installing = false;
+                self.install_rx = None;
+                match result {
+                    Ok(()) => {
+                        self.install_error = None;
+                        self.status = Some(
+                            "HWiNFO installed - start it, tick Shared Memory Support, then                              use Check again."
+                                .to_string(),
+                        );
+                        self.send(worker::Cmd::Reprobe);
+                    }
+                    Err(reason) => {
+                        self.status = None;
+                        self.install_error = Some(reason);
+                    }
+                }
+            }
         }
         if ctx.input(|i| i.viewport().minimized) == Some(true) {
             return; // nothing to draw, and no repaints to schedule
@@ -644,7 +693,7 @@ impl App {
                     )
                 });
                 let gpu_sub = match self.latest.as_ref().and_then(|s| s.gpu.as_ref()) {
-                    Some(gpu) => Some(format!("{} C  ·  {}%", gpu.temp_c, gpu.util_pct)),
+                    Some(gpu) => Some(format!("{} °C  ·  {}%", gpu.temp_c, gpu.util_pct)),
                     None => Some("not detected".to_string()),
                 };
                 let ram_total = self.info.as_ref().map(|i| i.ram_total_mib).unwrap_or(0);

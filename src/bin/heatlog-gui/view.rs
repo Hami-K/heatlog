@@ -28,12 +28,12 @@ pub struct ChartView {
 /// Plain-language hover text per chart, e.g. "CPU usage 10%".
 fn phrase_for(title: &str) -> fn(f64) -> String {
     match title {
-        "GPU temperature" => |v| format!("GPU {v:.0} C"),
+        "GPU temperature" => |v| format!("GPU {v:.0} °C"),
         "GPU speed" => |v| format!("GPU at {v:.2} GHz"),
         "GPU power" => |v| format!("GPU drawing {v:.0} W"),
         "CPU usage" => |v| format!("CPU usage {v:.0}%"),
         "CPU speed" => |v| format!("CPU at {v:.2} GHz"),
-        "CPU temperature" => |v| format!("CPU {v:.0} C"),
+        "CPU temperature" => |v| format!("CPU {v:.0} °C"),
         _ => |v| format!("{v:.1}"),
     }
 }
@@ -286,7 +286,7 @@ fn technical_ui(ui: &mut egui::Ui, s: &Summary) {
             if let Some(gpu) = &s.gpu {
                 ui.label(RichText::new(s.gpu_name.as_deref().unwrap_or("GPU")).strong());
                 egui::Grid::new("gpu-tech").striped(true).show(ui, |ui| {
-                    plain(ui, "Temperature", &gpu.temp_c, "C");
+                    plain(ui, "Temperature", &gpu.temp_c, "°C");
                     ghz(ui, "Speed", &gpu.core_mhz);
                     plain(ui, "Utilization", &gpu.util_pct, "%");
                     plain(ui, "Power draw", &gpu.power_w, "W");
@@ -311,7 +311,7 @@ fn technical_ui(ui: &mut egui::Ui, s: &Summary) {
                 plain(ui, "Usage", &s.cpu.usage_pct, "%");
                 ghz(ui, "Speed (fastest core)", &s.cpu.max_core_mhz);
                 if let Some(temp) = &s.cpu_temp {
-                    plain(ui, "Temperature", temp, "C");
+                    plain(ui, "Temperature", temp, "°C");
                 }
             });
             if let Some(t) = &s.cpu.throttle {
