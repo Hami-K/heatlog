@@ -2,8 +2,16 @@
 //! process list, which Windows shows to any user: never the contents of
 //! another process.
 
+use std::time::{Duration, Instant};
+
 use serde::{Deserialize, Serialize};
 use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
+
+/// Asking Windows about every process costs around 4% of a core, which
+/// dwarfs everything else heatlog does. Slowdowns last seconds, not
+/// milliseconds, so the process list is read on its own slower beat and
+/// the samples in between simply carry no process list.
+const EVERY: Duration = Duration::from_secs(4);
 
 /// One process as it looked during a sample.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -17,6 +25,7 @@ pub struct ProcSample {
 pub struct ProcessWatch {
     sys: System,
     cores: f32,
+    last: Option<Instant>,
 }
 
 impl ProcessWatch {
@@ -38,12 +47,18 @@ impl ProcessWatch {
         Self {
             cores: sys.cpus().len().max(1) as f32,
             sys,
+            last: None,
         }
     }
 
-    /// The `n` busiest processes by CPU. Processes using no CPU and little
-    /// memory are left out: a slowdown is never explained by an idle one.
+    /// The `n` busiest processes by CPU, or nothing at all if the last
+    /// reading is still recent. Processes using no CPU and little memory
+    /// are left out: a slowdown is never explained by an idle one.
     pub fn top(&mut self, n: usize) -> Vec<ProcSample> {
+        if self.last.is_some_and(|last| last.elapsed() < EVERY) {
+            return Vec::new();
+        }
+        self.last = Some(Instant::now());
         self.sys
             .refresh_processes_specifics(ProcessesToUpdate::All, true, Self::what_to_read());
         let mut procs: Vec<ProcSample> = self

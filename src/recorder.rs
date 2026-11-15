@@ -229,7 +229,8 @@ mod tests {
         assert_eq!(session.meta.interval_secs, 1);
         assert_eq!(session.samples.len(), 1);
         assert!(!session.samples[0].cpu.per_core_mhz.is_empty());
-        // Process recording was on, and something is always running.
+        // Process recording was on, and the first sample always carries
+        // a list: the slower cadence only skips later ones.
         assert!(!session.samples[0].top_procs.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
