@@ -154,8 +154,8 @@ i9-13900H, Windows 11):
 
 The app draws once a second, when a new sample arrives. It only redraws
 faster while the window has focus (to let numbers glide), and not at all
-while it is minimised. Resting the mouse pointer on a chart costs more
-again, because the value tooltip follows the pointer.
+while it is minimised. Resting the mouse pointer on a chart costs about 7%
+of a core while it sits there, because the readout follows the pointer.
 
 The WMI provider process that serves the performance-counter queries
 (WmiPrvSE) showed no measurable CPU increase.
