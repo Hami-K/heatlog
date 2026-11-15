@@ -48,6 +48,8 @@ enum Command {
     },
     /// Show recorded sessions
     List,
+    /// Check GitHub for a newer heatlog and install it after confirmation
+    Update,
 }
 
 fn main() -> Result<()> {
@@ -88,11 +90,43 @@ fn main() -> Result<()> {
             }
             Ok(())
         }
+        Command::Update => update(),
         Command::List => {
             let cfg = config::load_or_create()?;
             list_sessions(&cfg)
         }
     }
+}
+
+fn update() -> Result<()> {
+    let cfg = config::load_or_create()?;
+    println!("This version: {}", heatlog::update::current_version());
+    let Some(available) = heatlog::update::check(cfg.include_prereleases)? else {
+        println!("heatlog is up to date.");
+        return Ok(());
+    };
+    let kind = if available.prerelease {
+        " (pre-release)"
+    } else {
+        ""
+    };
+    println!("Update available: {}{kind}", available.version);
+    let Some(url) = &available.installer_url else {
+        println!("No installer in that release. See {}", available.page_url);
+        return Ok(());
+    };
+
+    print!("Download and run the installer now? [y/N] ");
+    std::io::Write::flush(&mut std::io::stdout())?;
+    let mut answer = String::new();
+    std::io::stdin().read_line(&mut answer)?;
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        println!("Left alone.");
+        return Ok(());
+    }
+    let path = heatlog::update::run_installer(url)?;
+    println!("Installer started from {}", path.display());
+    Ok(())
 }
 
 fn resolve_session(cfg: &config::Config, arg: Option<&str>) -> Result<std::path::PathBuf> {
