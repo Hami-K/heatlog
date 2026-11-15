@@ -45,8 +45,8 @@ colour itself shows how hot things are.
   a configured game launches and stops when it exits (Ctrl+R also toggles)
 - A Recordings page listing past sessions with verdict pills, peak
   temperatures and a sparkline preview; opening one shows the verdict,
-  charts with point-snapping tooltips, technical details, and an
-  Export HTML button
+  possible causes for its slow moments, charts with point-snapping
+  tooltips, technical details, and an Export HTML button
 
 ## Command line
 
@@ -77,23 +77,23 @@ section. Long sessions are downsampled in a way that preserves spikes.
 
 <!-- SCREENSHOTS: add app and report screenshots here -->
 
-## CPU temperature
+## CPU temperature and fan speeds
 
-Windows has no unprivileged API for CPU temperature, so heatlog borrows the
-reading from a monitoring app that already ships a signed driver. It looks
-for these in order, and keeps working without either:
+Windows has no unprivileged API for CPU temperature or fan speed, so heatlog
+borrows them from a monitoring app that already ships a signed driver. It
+looks for these in order, and keeps working without either:
 
-1. **HWiNFO** (recommended) through its shared-memory interface. Install it
-   with `winget install --id REALiX.HWiNFO -e`, or from
+1. **LibreHardwareMonitor** (recommended) through its web server
+   (`winget install LibreHardwareMonitor.LibreHardwareMonitor`, then
+   Options > Remote Web Server > Run). The package is portable: it adds no
+   Start menu entry and must run as administrator, so heatlog finds it and
+   offers to start it for you.
+2. **HWiNFO** through its shared-memory interface. Install it with
+   `winget install --id REALiX.HWiNFO -e`, or from
    [hwinfo.com](https://www.hwinfo.com/download/) if winget's download
    fails; start it in sensors-only mode, tick **Shared Memory Support** in
    its settings, and leave it running. The free version switches that option
    off again after 12 hours; heatlog says so when it happens.
-2. **LibreHardwareMonitor** through its web server
-   (`winget install LibreHardwareMonitor.LibreHardwareMonitor`, then
-   Options > Remote Web Server > Run). Note that this package is portable:
-   it adds no Start menu entry and must run as administrator. heatlog finds
-   it and offers to start it for you.
 
 The app's Settings page has an **Open setup** button that detects which of
 these is installed or running, installs HWiNFO through winget, offers to
@@ -119,9 +119,38 @@ can be edited from the app's Settings page:
 - `check_updates`, `include_prereleases` - update checking (see below)
 - `delete_after_days` - delete recordings older than this on start-up; 0
   keeps them forever
+- `record_processes` - record which programs were busy, so reports can
+  suggest what caused a slowdown (see below)
 
 Sessions are JSON Lines files (`.jsonl`), one metadata line followed by one
 JSON object per sample, so a crash or kill loses at most the last sample.
+
+## Possible causes, and your privacy
+
+When a recording contains slow moments, the report suggests what might
+explain them: heat, a power limit, the cooling system already at its limit,
+a background program that was busy at the time, or memory running out.
+These are read off the recording, so they are labelled as possibilities
+rather than findings.
+
+To name a background program, heatlog records the busiest few processes
+with each sample. That means program names are written into the recording
+files **on this PC**, and nothing is ever sent anywhere. If you would rather
+record hardware readings only, untick **Record which programs were busy**
+in Settings, or set `record_processes = false` in the config file. Reports
+then skip the background-program suggestion and keep the rest.
+
+heatlog only ever reads the process list, which Windows shows to any
+program. It never looks inside another process.
+
+## Fans and cooling limits
+
+When a monitoring app reports fan speeds, heatlog records them too, charts
+them, and uses them to tell two situations apart: the fans were already at
+full speed while the hardware throttled, which means the machine is cooling
+as hard as it can, or the hardware throttled while the fans still had room,
+which points at a fan curve or power plan and the laptop maker's own
+utility. heatlog never controls fans.
 
 ## Recordings and disk space
 
@@ -175,9 +204,12 @@ The WMI provider process that serves the performance-counter queries
   core: percent-of-base-clock times each core's base frequency, the same
   calculation Task Manager shows. CPU usage and RAM come from the same
   counters via the `sysinfo` crate.
-- **CPU temperature** - read from HWiNFO's shared memory or
-  LibreHardwareMonitor's web server, as described above, and degraded to
+- **CPU temperature and fans** - read from LibreHardwareMonitor's web
+  server or HWiNFO's shared memory, as described above, and degraded to
   "unavailable" rather than guessed.
+- **Possible causes** - the busiest processes during a session's slow
+  moments, combined with what the driver reported, turned into plain
+  suggestions. Process names never leave the PC.
 - **Reports** - averages, peaks with timestamps, and consecutive throttled
   samples grouped into episodes per reason. CPU throttling is a clearly
   labelled estimate (sustained high load with clocks well below the session's
