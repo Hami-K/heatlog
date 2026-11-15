@@ -5,31 +5,53 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sysinfo::{ProcessesToUpdate, System};
 
 use super::hwinfo::HwInfoShm;
 
-/// Windows gives no unprivileged API for CPU temperature, so heatlog borrows
-/// the reading from a monitoring app that already has a signed driver.
-/// Sources are probed in order and the whole feature degrades to
+/// One fan, as the monitoring app names it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Fan {
+    pub name: String,
+    pub rpm: u32,
+}
+
+/// What a monitoring app can tell us that Windows will not: the CPU
+/// package temperature, and how hard the fans are working.
+#[derive(Debug, Default)]
+pub struct Reading {
+    pub cpu_temp_c: Option<f32>,
+    pub fans: Vec<Fan>,
+}
+
+impl Reading {
+    pub fn fastest_fan(&self) -> Option<u32> {
+        self.fans.iter().map(|fan| fan.rpm).max()
+    }
+}
+
+/// Windows gives no unprivileged API for CPU temperature or fan speed, so
+/// heatlog borrows them from a monitoring app that already has a signed
+/// driver. Sources are probed in order and the whole feature degrades to
 /// "unavailable" rather than failing.
 pub trait CpuTempSource {
     fn label(&self) -> &'static str;
-    fn read_c(&mut self) -> Result<f32>;
+    fn read(&mut self) -> Result<Reading>;
 }
 
 /// Returns the first source that produces a plausible reading right now:
-/// HWiNFO's shared memory, then LibreHardwareMonitor's web server.
+/// LibreHardwareMonitor's web server, then HWiNFO's shared memory.
 pub fn detect(lhm_url: &str) -> Option<Box<dyn CpuTempSource>> {
-    if HwInfoShm::available() {
-        return Some(Box::new(HwInfoShm));
-    }
     let mut lhm = LhmWebServer {
         url: lhm_url.to_string(),
     };
-    if lhm.read_c().is_ok() {
+    if lhm.read().is_ok_and(|reading| reading.cpu_temp_c.is_some()) {
         return Some(Box::new(lhm));
+    }
+    if HwInfoShm::available() {
+        return Some(Box::new(HwInfoShm));
     }
     None
 }
@@ -63,13 +85,13 @@ pub fn availability(lhm_url: &str) -> Availability {
     let lhm_web = LhmWebServer {
         url: lhm_url.to_string(),
     }
-    .read_c()
-    .is_ok();
+    .read()
+    .is_ok_and(|reading| reading.cpu_temp_c.is_some());
     Availability {
-        source: if hwinfo_sharing {
-            Some("HWiNFO")
-        } else if lhm_web {
+        source: if lhm_web {
             Some("LibreHardwareMonitor")
+        } else if hwinfo_sharing {
+            Some("HWiNFO")
         } else {
             None
         },
@@ -151,23 +173,28 @@ impl CpuTempSource for LhmWebServer {
         "LibreHardwareMonitor"
     }
 
-    fn read_c(&mut self) -> Result<f32> {
+    fn read(&mut self) -> Result<Reading> {
         let body = http_get(&self.url)?;
         let tree: Value = serde_json::from_str(&body).context("parsing LHM JSON")?;
-        find_cpu_temp(&tree).context("no CPU temperature in LHM data")
+        Ok(parse_lhm(&tree))
     }
 }
 
-/// Walks LHM's sensor tree picking the best CPU temperature: a package-level
-/// sensor ("CPU Package", AMD "Tctl") if present, otherwise the hottest
-/// CPU-related sensor.
-fn find_cpu_temp(root: &Value) -> Option<f32> {
+/// Pulls the CPU temperature and every fan out of LHM's sensor tree.
+pub fn parse_lhm(root: &Value) -> Reading {
     let mut best: Option<(bool, f32)> = None;
-    walk(root, &mut Vec::new(), &mut best);
-    best.map(|(_, temp)| temp)
+    let mut fans = Vec::new();
+    walk(root, &mut Vec::new(), &mut best, &mut fans);
+    Reading {
+        cpu_temp_c: best.map(|(_, temp)| temp),
+        fans,
+    }
 }
 
-fn walk(node: &Value, path: &mut Vec<String>, best: &mut Option<(bool, f32)>) {
+/// Walks LHM's sensor tree picking the best CPU temperature - a
+/// package-level sensor ("CPU Package", AMD "Tctl") if present, otherwise
+/// the hottest CPU-related sensor - and collecting the fans on the way.
+fn walk(node: &Value, path: &mut Vec<String>, best: &mut Option<(bool, f32)>, fans: &mut Vec<Fan>) {
     let text = node.get("Text").and_then(Value::as_str).unwrap_or("");
     path.push(text.to_string());
 
@@ -193,12 +220,35 @@ fn walk(node: &Value, path: &mut Vec<String>, best: &mut Option<(bool, f32)>) {
         }
     }
 
+    if let Some(rpm) = node
+        .get("Value")
+        .and_then(Value::as_str)
+        .and_then(parse_rpm)
+    {
+        fans.push(Fan {
+            name: if text.is_empty() {
+                "Fan".to_string()
+            } else {
+                text.to_string()
+            },
+            rpm,
+        });
+    }
+
     if let Some(children) = node.get("Children").and_then(Value::as_array) {
         for child in children {
-            walk(child, path, best);
+            walk(child, path, best, fans);
         }
     }
     path.pop();
+}
+
+/// LHM writes fan speeds like "2400 RPM"; percentages of maximum are a
+/// different sensor and are left alone.
+fn parse_rpm(value: &str) -> Option<u32> {
+    let number = value.strip_suffix("RPM")?.trim().replace(',', ".");
+    let rpm = number.parse::<f32>().ok()?;
+    (1.0..=20_000.0).contains(&rpm).then_some(rpm as u32)
 }
 
 /// LHM formats values like "67.5 °C", with a locale-dependent decimal

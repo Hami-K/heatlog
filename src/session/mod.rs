@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 
 pub use crate::sensors::cpu::CpuSample;
 use crate::sensors::cpu::CpuSnapshot;
+pub use crate::sensors::cpu_temp::{Fan, Reading};
 pub use crate::sensors::gpu::GpuSample;
+pub use crate::sensors::processes::ProcSample;
 
 /// First line of every session file; per-sample lines follow.
 #[derive(Debug, Serialize, Deserialize)]
@@ -33,21 +35,35 @@ pub struct Sample {
     pub gpu: Option<GpuSample>,
     pub cpu_temp_c: Option<f32>,
     pub ram_used_mib: u64,
+    // Added after the first releases. Serde reads a missing list as empty
+    // and writes nothing when there is nothing, so old and new files stay
+    // readable by old and new versions alike.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fans: Vec<Fan>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_procs: Vec<ProcSample>,
 }
 
 impl Sample {
+    pub fn fastest_fan(&self) -> Option<u32> {
+        self.fans.iter().map(|fan| fan.rpm).max()
+    }
+
     pub fn new(
         at: DateTime<Utc>,
         cpu: CpuSnapshot,
         gpu: Option<GpuSample>,
-        cpu_temp_c: Option<f32>,
+        reading: Reading,
+        top_procs: Vec<ProcSample>,
     ) -> Self {
         Self {
             t_ms: at.timestamp_millis(),
             ram_used_mib: cpu.ram_used_mib,
             cpu: cpu.sample,
             gpu,
-            cpu_temp_c,
+            cpu_temp_c: reading.cpu_temp_c,
+            fans: reading.fans,
+            top_procs,
         }
     }
 }
@@ -288,6 +304,8 @@ mod tests {
             gpu: None,
             cpu_temp_c: None,
             ram_used_mib: 1,
+            fans: Vec::new(),
+            top_procs: Vec::new(),
         })
         .unwrap()
     }

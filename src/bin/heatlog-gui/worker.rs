@@ -78,7 +78,7 @@ fn run(ctx: egui::Context, cmds: Receiver<Cmd>, events: Sender<Event>) {
         .sessions_dir()
         .unwrap_or_else(|_| PathBuf::from("sessions"));
 
-    let mut sensors = Sensors::init(&cfg.lhm_url);
+    let mut sensors = Sensors::init(&cfg.lhm_url, cfg.record_processes);
     let info = |sensors: &Sensors, cfg: &Config| {
         Event::Ready(Box::new(Info {
             cpu_name: sensors.cpu_name().to_string(),

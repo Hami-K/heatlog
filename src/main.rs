@@ -92,6 +92,7 @@ fn main() -> Result<()> {
                 }
             } else {
                 report::print(&summary);
+                report::print_causes(&report::causes::causes(&session, &summary));
             }
             Ok(())
         }
@@ -210,8 +211,16 @@ fn snapshot() -> Result<()> {
 
     let cfg = config::load_or_create()?;
     match sensors::cpu_temp::detect(&cfg.lhm_url) {
-        Some(mut source) => match source.read_c() {
-            Ok(t) => println!("CPU temp:     {t:.1} °C ({})", source.label()),
+        Some(mut source) => match source.read() {
+            Ok(reading) => {
+                match reading.cpu_temp_c {
+                    Some(t) => println!("CPU temp:     {t:.1} °C ({})", source.label()),
+                    None => println!("CPU temp:     unavailable"),
+                }
+                for fan in &reading.fans {
+                    println!("Fan:          {} rpm ({})", fan.rpm, fan.name);
+                }
+            }
             Err(e) => println!("CPU temp:     unavailable ({e:#})"),
         },
         None => println!("CPU temp:     unavailable"),

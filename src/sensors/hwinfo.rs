@@ -13,10 +13,11 @@ use windows::Win32::System::Memory::{
     MEMORY_BASIC_INFORMATION,
 };
 
-use super::cpu_temp::CpuTempSource;
+use super::cpu_temp::{CpuTempSource, Fan, Reading};
 
 const SIGNATURE: u32 = 0x4857_6953; // "SiWH"
 const TEMPERATURE: u32 = 1; // SENSOR_TYPE_TEMP
+const FAN: u32 = 3; // SENSOR_TYPE_FAN
 const SENSOR_ELEMENT_SIZE: u32 = 264; // 2 DWORDs + 2 x 128-byte names
 
 pub struct HwInfoShm;
@@ -24,7 +25,7 @@ pub struct HwInfoShm;
 impl HwInfoShm {
     /// True when HWiNFO is running with Shared Memory Support enabled.
     pub fn available() -> bool {
-        read_block().is_ok_and(|block| parse_cpu_temp(&block).is_some())
+        read_block().is_ok_and(|block| parse(&block).cpu_temp_c.is_some())
     }
 }
 
@@ -33,9 +34,13 @@ impl CpuTempSource for HwInfoShm {
         "HWiNFO"
     }
 
-    fn read_c(&mut self) -> Result<f32> {
+    fn read(&mut self) -> Result<Reading> {
         let block = read_block()?;
-        parse_cpu_temp(&block).context("no CPU temperature among HWiNFO's sensors")
+        let reading = parse(&block);
+        if reading.cpu_temp_c.is_none() {
+            bail!("no CPU temperature among HWiNFO's sensors");
+        }
+        Ok(reading)
     }
 }
 
@@ -151,29 +156,48 @@ fn score(label: &str) -> Option<u8> {
     }
 }
 
-pub fn parse_cpu_temp(bytes: &[u8]) -> Option<f32> {
-    let layout = parse_header(bytes)?;
+pub fn parse(bytes: &[u8]) -> Reading {
+    let Some(layout) = parse_header(bytes) else {
+        return Reading::default();
+    };
     let mut best: Option<(u8, f32)> = None;
+    let mut fans = Vec::new();
     for i in 0..layout.count {
         let at = layout.readings_at + i * layout.reading_size;
-        if u32_at(bytes, at)? != TEMPERATURE {
-            continue;
-        }
+        let Some(kind) = u32_at(bytes, at) else { break };
         // Prefer the name the user may have customised, fall back to the
         // one HWiNFO ships.
-        let label = str_at(bytes, at + 140, 128)
+        let Some(label) = str_at(bytes, at + 140, 128)
             .filter(|label| !label.is_empty())
-            .or_else(|| str_at(bytes, at + 12, 128))?;
-        let Some(score) = score(label) else { continue };
-        let celsius = f64_at(bytes, at + layout.value_at)? as f32;
-        if !(0.0..=120.0).contains(&celsius) {
+            .or_else(|| str_at(bytes, at + 12, 128))
+        else {
             continue;
-        }
-        if best.is_none_or(|(best_score, _)| score > best_score) {
-            best = Some((score, celsius));
+        };
+        let Some(value) = f64_at(bytes, at + layout.value_at) else {
+            continue;
+        };
+        match kind {
+            TEMPERATURE => {
+                let Some(score) = score(label) else { continue };
+                let celsius = value as f32;
+                if !(0.0..=120.0).contains(&celsius) {
+                    continue;
+                }
+                if best.is_none_or(|(best_score, _)| score > best_score) {
+                    best = Some((score, celsius));
+                }
+            }
+            FAN if (1.0..=20_000.0).contains(&value) => fans.push(Fan {
+                name: label.to_string(),
+                rpm: value as u32,
+            }),
+            _ => {}
         }
     }
-    best.map(|(_, celsius)| celsius)
+    Reading {
+        cpu_temp_c: best.map(|(_, celsius)| celsius),
+        fans,
+    }
 }
 
 #[cfg(test)]
@@ -214,21 +238,40 @@ mod tests {
                     (TEMPERATURE, "GPU Temperature", 80.0),
                 ],
             );
-            assert_eq!(parse_cpu_temp(&block), Some(73.0), "packed: {packed}");
+            assert_eq!(parse(&block).cpu_temp_c, Some(73.0), "packed: {packed}");
         }
     }
 
     #[test]
     fn falls_back_to_any_cpu_temperature() {
         let block = fake_block(true, &[(TEMPERATURE, "CPU Core #3", 58.5)]);
-        assert_eq!(parse_cpu_temp(&block), Some(58.5));
+        assert_eq!(parse(&block).cpu_temp_c, Some(58.5));
     }
 
     #[test]
     fn rejects_rubbish() {
-        assert_eq!(parse_cpu_temp(&[0u8; 64]), None);
+        assert_eq!(parse(&[0u8; 64]).cpu_temp_c, None);
         // A plausible header, but nothing that names a CPU temperature.
         let block = fake_block(true, &[(TEMPERATURE, "Motherboard", 35.0)]);
-        assert_eq!(parse_cpu_temp(&block), None);
+        assert_eq!(parse(&block).cpu_temp_c, None);
+    }
+
+    #[test]
+    fn fans_come_back_with_their_names() {
+        let block = fake_block(
+            true,
+            &[
+                (TEMPERATURE, "CPU Package", 71.0),
+                (FAN, "CPU Fan", 3100.0),
+                (FAN, "GPU Fan", 2750.0),
+                (FAN, "Unplugged Fan", 0.0),
+            ],
+        );
+        let reading = parse(&block);
+        assert_eq!(reading.cpu_temp_c, Some(71.0));
+        // The stopped fan is dropped rather than reported as 0 RPM.
+        assert_eq!(reading.fans.len(), 2);
+        assert_eq!(reading.fans[0].name, "CPU Fan");
+        assert_eq!(reading.fastest_fan(), Some(3100));
     }
 }

@@ -18,6 +18,10 @@ pub struct Config {
     pub include_prereleases: bool,
     /// Delete recordings older than this many days on start-up; 0 is off.
     pub delete_after_days: u64,
+    /// Record which programs were busy, so reports can suggest what
+    /// caused a slowdown. Names of running programs are personal, so this
+    /// can be switched off.
+    pub record_processes: bool,
 }
 
 impl Default for Config {
@@ -30,6 +34,7 @@ impl Default for Config {
             check_updates: true,
             include_prereleases: false,
             delete_after_days: 0,
+            record_processes: true,
         }
     }
 }
@@ -78,6 +83,11 @@ include_prereleases = false
 # Delete recordings older than this many days when the app starts.
 # 0 keeps them forever.
 delete_after_days = 0
+
+# Record which programs were busy during each sample, so reports can
+# suggest what caused a slowdown. Program names are written into session
+# files; set this to false to record hardware readings only.
+record_processes = true
 "#;
 
 pub fn config_path() -> Result<PathBuf> {

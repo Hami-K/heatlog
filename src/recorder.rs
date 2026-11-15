@@ -13,6 +13,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use crate::sensors::cpu::CpuSensor;
 use crate::sensors::cpu_temp::{self, CpuTempSource};
 use crate::sensors::gpu::{GpuInfo, GpuSensor};
+use crate::sensors::processes::ProcessWatch;
 use crate::session::{Sample, SessionMeta, SessionWriter};
 
 /// All sensors behind one handle, usable for live monitoring without
@@ -23,6 +24,8 @@ pub struct Sensors {
     gpu_info: Option<GpuInfo>,
     cpu: CpuSensor,
     temp_source: Option<Box<dyn CpuTempSource>>,
+    /// None when the user has turned process recording off.
+    processes: Option<ProcessWatch>,
     cpu_name: String,
     ram_total_mib: u64,
 }
@@ -30,7 +33,7 @@ pub struct Sensors {
 impl Sensors {
     /// The first init on a machine can take a few seconds (WMI/COM
     /// startup, temperature source probing).
-    pub fn init(lhm_url: &str) -> Self {
+    pub fn init(lhm_url: &str, record_processes: bool) -> Self {
         let gpu = GpuSensor::new().ok();
         let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
         let mut cpu = CpuSensor::new();
@@ -41,6 +44,7 @@ impl Sensors {
             gpu_info,
             cpu,
             temp_source,
+            processes: record_processes.then(ProcessWatch::new),
             cpu_name: first_read.name,
             ram_total_mib: first_read.ram_total_mib,
         }
@@ -77,8 +81,17 @@ impl Sensors {
     pub fn read_sample(&mut self) -> Sample {
         let cpu_snap = self.cpu.read();
         let gpu_snap = self.gpu.as_ref().and_then(|g| g.read().ok());
-        let temp = self.temp_source.as_mut().and_then(|s| s.read_c().ok());
-        Sample::new(Utc::now(), cpu_snap, gpu_snap, temp)
+        let reading = self
+            .temp_source
+            .as_mut()
+            .and_then(|source| source.read().ok())
+            .unwrap_or_default();
+        let top_procs = self
+            .processes
+            .as_mut()
+            .map(|watch| watch.top(5))
+            .unwrap_or_default();
+        Sample::new(Utc::now(), cpu_snap, gpu_snap, reading, top_procs)
     }
 
     pub fn session_meta(&self, interval_secs: u64, game: Option<String>) -> SessionMeta {
@@ -115,8 +128,9 @@ impl Recorder {
         sessions_dir: &Path,
         interval_secs: u64,
         game: Option<(Pid, String)>,
+        record_processes: bool,
     ) -> Result<Self> {
-        let sensors = Sensors::init(lhm_url);
+        let sensors = Sensors::init(lhm_url, record_processes);
         let meta = sensors.session_meta(interval_secs, game.as_ref().map(|(_, n)| n.clone()));
         let writer = SessionWriter::create(sessions_dir, &meta)?;
         Ok(Self {
@@ -205,7 +219,7 @@ mod tests {
     #[test]
     fn records_meta_and_one_sample() {
         let dir = std::env::temp_dir().join(format!("heatlog-rec-test-{}", std::process::id()));
-        let mut rec = Recorder::start("http://127.0.0.1:9/none", &dir, 1, None).unwrap();
+        let mut rec = Recorder::start("http://127.0.0.1:9/none", &dir, 1, None, true).unwrap();
         std::thread::sleep(Duration::from_millis(1100));
         let step = rec.step().unwrap();
         assert!(step.game_exited.is_none());
@@ -215,6 +229,8 @@ mod tests {
         assert_eq!(session.meta.interval_secs, 1);
         assert_eq!(session.samples.len(), 1);
         assert!(!session.samples[0].cpu.per_core_mhz.is_empty());
+        // Process recording was on, and something is always running.
+        assert!(!session.samples[0].top_procs.is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

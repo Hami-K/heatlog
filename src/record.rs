@@ -55,7 +55,13 @@ pub fn run(
         None
     };
 
-    let mut rec = Recorder::start(&cfg.lhm_url, &sessions_dir, interval_secs, game)?;
+    let mut rec = Recorder::start(
+        &cfg.lhm_url,
+        &sessions_dir,
+        interval_secs,
+        game,
+        cfg.record_processes,
+    )?;
     if !rec.gpu_available() {
         println!("GPU unavailable, recording CPU/RAM only");
     }
