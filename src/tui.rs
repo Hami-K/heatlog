@@ -106,7 +106,7 @@ impl Tui {
                         frame,
                         left,
                         format!(
-                            "GPU {} C  {} MHz  {:.0} W{throttle}",
+                            "GPU {} °C  {} MHz  {:.0} W{throttle}",
                             gpu.temp_c, gpu.core_mhz, gpu.power_w
                         ),
                         gpu_temp,
@@ -147,7 +147,7 @@ impl Tui {
             );
 
             let cpu_temp = match sample.cpu_temp_c {
-                Some(t) => format!("CPU temp {t:.0} C"),
+                Some(t) => format!("CPU temp {t:.0} °C"),
                 None => "CPU temp n/a".to_string(),
             };
             frame.render_widget(

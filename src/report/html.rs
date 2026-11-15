@@ -80,7 +80,7 @@ fn headline(s: &Summary) -> String {
     if let Some(gpu) = &s.gpu {
         let _ = write!(
             out,
-            "<li>GPU peaked at {:.0} C and {:.1} GHz, drawing up to {:.0} W</li>",
+            "<li>GPU peaked at {:.0} °C and {:.1} GHz, drawing up to {:.0} W</li>",
             gpu.temp_c.peak,
             gpu.core_mhz.peak / 1000.0,
             gpu.power_w.peak
@@ -95,7 +95,11 @@ fn headline(s: &Summary) -> String {
         s.cpu.usage_pct.peak
     );
     if let Some(temp) = &s.cpu_temp {
-        let _ = write!(out, "<li>CPU temperature peaked at {:.0} C</li>", temp.peak);
+        let _ = write!(
+            out,
+            "<li>CPU temperature peaked at {:.0} °C</li>",
+            temp.peak
+        );
     }
     match s.ram_total_mib {
         Some(total) if total > 0 => {
@@ -132,7 +136,7 @@ fn technical(s: &Summary) -> String {
             out,
             "<h2>GPU &mdash; {}</h2><table>{}{}{}{}{}</table>",
             s.gpu_name.as_deref().unwrap_or("unknown"),
-            row("Temperature", &gpu.temp_c, "C"),
+            row("Temperature", &gpu.temp_c, "°C"),
             row("Core clock", &gpu.core_mhz, "MHz"),
             row("Utilisation", &gpu.util_pct, "%"),
             row("Power draw", &gpu.power_w, "W"),
@@ -175,7 +179,7 @@ fn technical(s: &Summary) -> String {
                     s.cpu_temp_source.as_deref().unwrap_or("unknown source")
                 ),
                 temp,
-                "C"
+                "°C"
             )
         );
     }

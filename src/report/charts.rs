@@ -71,7 +71,7 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
     let charts = vec![
         ChartData {
             title: "GPU temperature",
-            unit: "C",
+            unit: "°C",
             explain: explain(
                 "How hot the graphics chip is. Staying out of the shaded hot zone is good.",
                 &gpu_bands,
@@ -143,7 +143,7 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
         },
         ChartData {
             title: "CPU temperature",
-            unit: "C",
+            unit: "°C",
             explain: explain(
                 "Processor temperature. Staying out of the shaded hot zone is good.",
                 &cpu_bands,

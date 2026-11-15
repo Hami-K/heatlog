@@ -53,6 +53,11 @@ enum Command {
 }
 
 fn main() -> Result<()> {
+    // Degree signs and the dashboard's box drawing are UTF-8; a console
+    // left on a legacy code page would print them as mojibake.
+    unsafe {
+        let _ = windows::Win32::System::Console::SetConsoleOutputCP(65001);
+    }
     let cli = Cli::parse();
     match cli.command {
         Command::Snapshot => snapshot(),
@@ -206,7 +211,7 @@ fn snapshot() -> Result<()> {
     let cfg = config::load_or_create()?;
     match sensors::cpu_temp::detect(&cfg.lhm_url) {
         Some(mut source) => match source.read_c() {
-            Ok(t) => println!("CPU temp:     {t:.1} C ({})", source.label()),
+            Ok(t) => println!("CPU temp:     {t:.1} °C ({})", source.label()),
             Err(e) => println!("CPU temp:     unavailable ({e:#})"),
         },
         None => println!("CPU temp:     unavailable"),
@@ -216,7 +221,7 @@ fn snapshot() -> Result<()> {
 
 fn print_gpu(info: &sensors::gpu::GpuInfo, s: &sensors::gpu::GpuSample) {
     println!("Name:         {}", info.name);
-    println!("Temperature:  {} C", s.temp_c);
+    println!("Temperature:  {} °C", s.temp_c);
     println!("Core clock:   {} MHz", s.core_mhz);
     println!("Memory clock: {} MHz", s.mem_mhz);
     println!(

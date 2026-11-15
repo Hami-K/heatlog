@@ -288,7 +288,7 @@ pub fn verdict(s: &Summary) -> (&'static str, String) {
         } else {
             match gpu_peak {
                 Some(p) if p >= 85.0 => {
-                    format!("Your GPU ran hot (peak {p:.0} C) but did not slow itself down.")
+                    format!("Your GPU ran hot (peak {p:.0} °C) but did not slow itself down.")
                 }
                 Some(_) => "Your laptop stayed cool — no throttling detected.".to_string(),
                 None => "No slowdowns detected. (No NVIDIA GPU was recorded in this session.)"
@@ -359,7 +359,7 @@ pub fn print(s: &Summary) {
     match (&s.gpu, &s.gpu_name) {
         (Some(gpu), name) => {
             println!("GPU  {}", name.as_deref().unwrap_or("unknown"));
-            print_series("Temperature", &gpu.temp_c, "C", 0);
+            print_series("Temperature", &gpu.temp_c, "°C", 0);
             print_series("Core clock", &gpu.core_mhz, "MHz", 0);
             print_series("Utilisation", &gpu.util_pct, "%", 0);
             print_series("Power draw", &gpu.power_w, "W", 1);
@@ -388,7 +388,7 @@ pub fn print(s: &Summary) {
     print_series("Fastest core", &s.cpu.max_core_mhz, "MHz", 0);
     match &s.cpu_temp {
         Some(temp) => {
-            print_series("Temperature", temp, "C", 0);
+            print_series("Temperature", temp, "°C", 0);
             if let Some(source) = &s.cpu_temp_source {
                 println!("               (source: {source})");
             }

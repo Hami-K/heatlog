@@ -127,11 +127,11 @@ pub fn run(
 
 fn print_status(n: u64, cpu_pct: f32, gpu_temp: Option<u32>, cpu_temp: Option<f32>) {
     let gpu = match gpu_temp {
-        Some(t) => format!("GPU {t} C"),
+        Some(t) => format!("GPU {t} °C"),
         None => "GPU n/a".to_string(),
     };
     let cpu_t = match cpu_temp {
-        Some(t) => format!("CPU {t:.0} C"),
+        Some(t) => format!("CPU {t:.0} °C"),
         None => "CPU temp n/a".to_string(),
     };
     print!("\rsample {n}  CPU {cpu_pct:.0}%  {cpu_t}  {gpu}   ");
