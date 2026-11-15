@@ -183,7 +183,8 @@ running on a 20-thread laptop CPU under Windows 11:
 
 | | CPU | Memory |
 |---|---|---|
-| `heatlog record` (command line) | 0.14% of one core | 20 MB |
+| `heatlog record` (command line) | 0.28% of one core | 19 MB |
+| the same, also recording which programs are busy | 0.94% of one core | 20 MB |
 | app in the background, which is where it sits while you game | 2.0% of one core | 145 MB |
 | app in the foreground with the window visible | 3.4% of one core | 145 MB |
 
@@ -191,6 +192,12 @@ The app draws once a second, when a new sample arrives. It only redraws
 faster while the window has focus (to let numbers glide), and not at all
 while it is minimised. Resting the mouse pointer on a chart costs about 7%
 of a core while it sits there, because the readout follows the pointer.
+
+Recording which programs are busy is the one expensive thing heatlog can
+do: asking Windows about every process costs around 4% of a core each time,
+so heatlog does it every few seconds rather than every second, which is
+plenty for explaining a slow stretch. Turning it off in Settings returns the
+recorder to the first row.
 
 The WMI provider process that serves the performance-counter queries
 (WmiPrvSE) showed no measurable CPU increase.
