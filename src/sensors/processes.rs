@@ -3,7 +3,7 @@
 //! another process.
 
 use serde::{Deserialize, Serialize};
-use sysinfo::{ProcessesToUpdate, System};
+use sysinfo::{ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 /// One process as it looked during a sample.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -20,11 +20,21 @@ pub struct ProcessWatch {
 }
 
 impl ProcessWatch {
+    /// Only CPU and memory are asked for. Refreshing everything sysinfo
+    /// can report about every process costs a few percent of a core each
+    /// second, which is more than the rest of heatlog put together.
+    fn what_to_read() -> ProcessRefreshKind {
+        ProcessRefreshKind::nothing()
+            .with_cpu()
+            .with_memory()
+            .with_exe(UpdateKind::Never)
+    }
+
     pub fn new() -> Self {
         let mut sys = System::new();
         // First refresh only establishes a baseline: per-process CPU is a
         // delta between two readings, like the system-wide figure.
-        sys.refresh_processes(ProcessesToUpdate::All, true);
+        sys.refresh_processes_specifics(ProcessesToUpdate::All, true, Self::what_to_read());
         Self {
             cores: sys.cpus().len().max(1) as f32,
             sys,
@@ -34,7 +44,8 @@ impl ProcessWatch {
     /// The `n` busiest processes by CPU. Processes using no CPU and little
     /// memory are left out: a slowdown is never explained by an idle one.
     pub fn top(&mut self, n: usize) -> Vec<ProcSample> {
-        self.sys.refresh_processes(ProcessesToUpdate::All, true);
+        self.sys
+            .refresh_processes_specifics(ProcessesToUpdate::All, true, Self::what_to_read());
         let mut procs: Vec<ProcSample> = self
             .sys
             .processes()
