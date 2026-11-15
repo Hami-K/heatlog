@@ -84,17 +84,23 @@ reading from a monitoring app that already ships a signed driver. It looks
 for these in order, and keeps working without either:
 
 1. **HWiNFO** (recommended) through its shared-memory interface. Install it
-   with `winget install --id REALiX.HWiNFO -e`, start it in sensors-only
-   mode, tick **Shared Memory Support** in its settings, and leave it
-   running. The free version switches that option off again after 12 hours;
-   heatlog says so when it happens.
+   with `winget install --id REALiX.HWiNFO -e`, or from
+   [hwinfo.com](https://www.hwinfo.com/download/) if winget's download
+   fails; start it in sensors-only mode, tick **Shared Memory Support** in
+   its settings, and leave it running. The free version switches that option
+   off again after 12 hours; heatlog says so when it happens.
 2. **LibreHardwareMonitor** through its web server
-   (`winget install LibreHardwareMonitor.LibreHardwareMonitor`, then enable
-   Options > Remote Web Server).
+   (`winget install LibreHardwareMonitor.LibreHardwareMonitor`, then
+   Options > Remote Web Server > Run). Note that this package is portable:
+   it adds no Start menu entry and must run as administrator. heatlog finds
+   it and offers to start it for you.
 
 The app's Settings page has an **Open setup** button that detects which of
-these is running, installs HWiNFO for you through winget, and re-checks.
-heatlog never changes another app's settings for you.
+these is installed or running, installs HWiNFO through winget, offers to
+start LibreHardwareMonitor, and re-checks. heatlog never changes another
+app's settings for you. If Windows Firewall asks about
+LibreHardwareMonitor's network access, blocking it is fine: heatlog only
+reads from this PC.
 
 GPU temperature needs none of this: NVIDIA's own management library reports
 it directly.
