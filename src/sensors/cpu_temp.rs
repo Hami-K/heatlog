@@ -1,5 +1,7 @@
+use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
@@ -39,6 +41,10 @@ pub struct Availability {
     pub hwinfo_sharing: bool,
     pub lhm_running: bool,
     pub lhm_web: bool,
+    /// Where LibreHardwareMonitor is installed, if heatlog can find it.
+    /// Its winget package is portable, so there is no Start menu entry to
+    /// point the user at.
+    pub lhm_path: Option<PathBuf>,
 }
 
 pub fn availability(lhm_url: &str) -> Availability {
@@ -71,7 +77,69 @@ pub fn availability(lhm_url: &str) -> Availability {
         hwinfo_sharing,
         lhm_running: running("librehardwaremonitor"),
         lhm_web,
+        lhm_path: find_lhm(&sys),
     }
+}
+
+/// Looks for LibreHardwareMonitor: first by asking a running copy where it
+/// came from, then in the places its installers put it (the winget package
+/// is portable and lands in a versioned folder).
+fn find_lhm(sys: &System) -> Option<PathBuf> {
+    let running = sys
+        .processes()
+        .values()
+        .find(|process| {
+            process
+                .name()
+                .to_string_lossy()
+                .to_ascii_lowercase()
+                .starts_with("librehardwaremonitor")
+        })
+        .and_then(|process| process.exe().map(Path::to_path_buf));
+    if running.is_some() {
+        return running;
+    }
+
+    let mut roots = Vec::new();
+    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+        roots.push(
+            PathBuf::from(&local)
+                .join("Programs")
+                .join("LibreHardwareMonitor"),
+        );
+        let packages = PathBuf::from(&local)
+            .join("Microsoft")
+            .join("WinGet")
+            .join("Packages");
+        if let Ok(entries) = fs::read_dir(packages) {
+            roots.extend(entries.flatten().map(|e| e.path()).filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().contains("LibreHardwareMonitor"))
+            }));
+        }
+    }
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(dir) = std::env::var_os(var) {
+            roots.push(PathBuf::from(dir).join("LibreHardwareMonitor"));
+        }
+    }
+    roots.iter().find_map(|root| find_exe(root, 2))
+}
+
+fn find_exe(dir: &Path, depth: usize) -> Option<PathBuf> {
+    let direct = dir.join("LibreHardwareMonitor.exe");
+    if direct.is_file() {
+        return Some(direct);
+    }
+    if depth == 0 {
+        return None;
+    }
+    fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .find_map(|path| find_exe(&path, depth - 1))
 }
 
 struct LhmWebServer {
