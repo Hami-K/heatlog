@@ -128,7 +128,7 @@ pub fn session_view(ui: &mut egui::Ui, loaded: &mut Loaded) -> bool {
         });
     ui.add_space(6.0);
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    {
         for chart in &loaded.charts {
             ui.add_space(8.0);
             ui.label(RichText::new(format!("{} ({})", chart.title, chart.unit)).strong());
@@ -138,7 +138,7 @@ pub fn session_view(ui: &mut egui::Ui, loaded: &mut Loaded) -> bool {
         ui.add_space(10.0);
         technical_ui(ui, &loaded.summary);
         ui.add_space(10.0);
-    });
+    }
     back
 }
 

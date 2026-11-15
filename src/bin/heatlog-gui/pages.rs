@@ -1030,7 +1030,7 @@ pub fn recordings(ui: &mut egui::Ui, app: &mut App) -> Option<PathBuf> {
     let mut open = None;
     let mut delete = None;
     let mut confirm = app.confirm_delete.clone();
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    {
         for row in &app.recordings.rows {
             let pending = confirm.as_deref() == Some(row.path.as_path());
             let response = egui::Frame::none()
@@ -1101,7 +1101,7 @@ pub fn recordings(ui: &mut egui::Ui, app: &mut App) -> Option<PathBuf> {
             }
             ui.add_space(4.0);
         }
-    });
+    }
     app.confirm_delete = confirm;
     if let Some(path) = delete {
         app.delete_recording(&path, ui.ctx());
@@ -1116,7 +1116,7 @@ pub fn settings(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
     ui.heading(format!("{}  Settings", icons::GEAR));
     ui.add_space(6.0);
 
-    egui::ScrollArea::vertical().show(ui, |ui| {
+    {
         card(ui, |ui| {
             ui.label(RichText::new("Auto-record these games").strong());
             ui.label(
@@ -1252,7 +1252,7 @@ pub fn settings(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
             .unwrap_or_default();
         ui.add_space(4.0);
         ui.label(RichText::new(format!("Stored in {path}")).weak().small());
-    });
+    }
     nav
 }
 

@@ -585,44 +585,50 @@ impl eframe::App for App {
                     });
                     ui.add_space(6.0);
                 }
-                if self.view.is_some() {
-                    let mut back = false;
-                    if let Some(loaded) = &mut self.view {
-                        back = view::session_view(ui, loaded);
-                    }
-                    if back {
-                        self.view = None;
-                    }
-                    return;
-                }
-                match self.page {
-                    Page::Overview => {
-                        if let Some(page) = pages::overview(ui, self) {
-                            self.page = page;
+                // One scroll for whatever page is showing: without it a
+                // page taller than the window hides its own buttons.
+                egui::ScrollArea::vertical()
+                    .auto_shrink(false)
+                    .show(ui, |ui| {
+                        if self.view.is_some() {
+                            let mut back = false;
+                            if let Some(loaded) = &mut self.view {
+                                back = view::session_view(ui, loaded);
+                            }
+                            if back {
+                                self.view = None;
+                            }
+                            return;
                         }
-                    }
-                    Page::TempSetup => {
-                        if let Some(page) = pages::temp_setup(ui, self) {
-                            self.page = page;
-                        }
-                    }
-                    Page::Cpu => pages::cpu(ui, self),
-                    Page::Gpu => pages::gpu(ui, self),
-                    Page::Memory => pages::memory(ui, self),
-                    Page::Recordings => {
-                        if let Some(open) = pages::recordings(ui, self) {
-                            match view::load_session(&open) {
-                                Ok(loaded) => self.view = Some(Box::new(loaded)),
-                                Err(e) => self.error = Some(format!("{e:#}")),
+                        match self.page {
+                            Page::Overview => {
+                                if let Some(page) = pages::overview(ui, self) {
+                                    self.page = page;
+                                }
+                            }
+                            Page::TempSetup => {
+                                if let Some(page) = pages::temp_setup(ui, self) {
+                                    self.page = page;
+                                }
+                            }
+                            Page::Cpu => pages::cpu(ui, self),
+                            Page::Gpu => pages::gpu(ui, self),
+                            Page::Memory => pages::memory(ui, self),
+                            Page::Recordings => {
+                                if let Some(open) = pages::recordings(ui, self) {
+                                    match view::load_session(&open) {
+                                        Ok(loaded) => self.view = Some(Box::new(loaded)),
+                                        Err(e) => self.error = Some(format!("{e:#}")),
+                                    }
+                                }
+                            }
+                            Page::Settings => {
+                                if let Some(page) = pages::settings(ui, self) {
+                                    self.page = page;
+                                }
                             }
                         }
-                    }
-                    Page::Settings => {
-                        if let Some(page) = pages::settings(ui, self) {
-                            self.page = page;
-                        }
-                    }
-                }
+                    });
             });
     }
 }
