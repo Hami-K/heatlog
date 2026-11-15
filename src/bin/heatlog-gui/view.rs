@@ -22,6 +22,20 @@ pub struct ChartView {
     y_lo: f64,
     y_hi: f64,
     hot_from: Option<f64>,
+    phrase: fn(f64) -> String,
+}
+
+/// Plain-language hover text per chart, e.g. "CPU 10% busy".
+fn phrase_for(title: &str) -> fn(f64) -> String {
+    match title {
+        "GPU temperature" => |v| format!("GPU {v:.0} C"),
+        "GPU speed" => |v| format!("GPU at {v:.2} GHz"),
+        "GPU power" => |v| format!("GPU drawing {v:.0} W"),
+        "CPU usage" => |v| format!("CPU {v:.0}% busy"),
+        "CPU speed" => |v| format!("CPU at {v:.2} GHz"),
+        "CPU temperature" => |v| format!("CPU {v:.0} C"),
+        _ => |v| format!("{v:.1}"),
+    }
 }
 
 pub struct Loaded {
@@ -58,6 +72,7 @@ pub fn load_session(path: &Path) -> anyhow::Result<Loaded> {
                 y_lo,
                 y_hi,
                 hot_from,
+                phrase: phrase_for(c.title),
             }
         })
         .collect();
@@ -164,17 +179,25 @@ fn plot_chart(ui: &mut egui::Ui, chart: &ChartView, duration: f64) {
                     .color(ACCENT)
                     .width(2.0_f32),
             );
-            hover_nearest(plot_ui, &chart.points, chart.unit, true);
+            hover_nearest(plot_ui, &chart.points, TimeFmt::Offset, chart.phrase);
         });
 }
 
+pub enum TimeFmt {
+    /// x counts seconds relative to now (live graphs): "12 s ago".
+    Ago,
+    /// x is the offset into a recording: "0:04".
+    Offset,
+}
+
 /// Snap the hover to the nearest data point: a marker on the point and a
-/// tooltip like "0:05 — 41 %" instead of raw cursor coordinates.
+/// plain-language tooltip like "0:04 · CPU 10% busy" instead of raw cursor
+/// coordinates.
 pub fn hover_nearest(
     plot_ui: &mut egui_plot::PlotUi,
     points: &[[f64; 2]],
-    unit: &str,
-    with_time: bool,
+    time: TimeFmt,
+    phrase: fn(f64) -> String,
 ) {
     if points.is_empty() || !plot_ui.response().hovered() {
         return;
@@ -197,22 +220,25 @@ pub fn hover_nearest(
             .color(ACCENT)
             .filled(true),
     );
-    let value = if nearest[1].abs() >= 100.0 {
-        format!("{:.0}", nearest[1])
-    } else {
-        format!("{:.1}", nearest[1])
+    let when = match time {
+        TimeFmt::Ago => {
+            if nearest[0] >= -0.5 {
+                "now".to_string()
+            } else {
+                format!("{:.0} s ago", -nearest[0])
+            }
+        }
+        TimeFmt::Offset => fmt_time(nearest[0].max(0.0) as u64),
     };
-    let text = if with_time {
-        format!("{} — {value}{}", fmt_time(nearest[0].max(0.0) as u64), unit)
-    } else {
-        format!("{value}{unit}")
-    };
+    let text = format!("{when} · {}", (phrase)(nearest[1]));
     egui::show_tooltip_at_pointer(
         plot_ui.ctx(),
         egui::LayerId::new(egui::Order::Tooltip, egui::Id::new("plot-tip-layer")),
         egui::Id::new("plot-tip"),
         |ui| {
-            ui.label(text);
+            // One line, sized to content: the default tooltip width made
+            // the text wrap mid-number.
+            ui.add(egui::Label::new(text).wrap_mode(egui::TextWrapMode::Extend));
         },
     );
 }

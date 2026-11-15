@@ -16,18 +16,45 @@ use eframe::egui::{self, Color32, RichText};
 use heatlog::report::fmt_time;
 use heatlog::session::Sample;
 
-pub const ACCENT: Color32 = Color32::from_rgb(59, 130, 246);
+/// Rust-family copper red: the app's primary accent.
+pub const ACCENT: Color32 = Color32::from_rgb(206, 66, 43);
 pub const RED: Color32 = Color32::from_rgb(220, 38, 38);
 pub const AMBER: Color32 = Color32::from_rgb(217, 119, 6);
 pub const GREEN: Color32 = Color32::from_rgb(22, 163, 74);
-/// Sidebar + hardware pages show the last 60 seconds; keep a little extra.
-pub const HISTORY: usize = 90;
+const COOL_BLUE: Color32 = Color32::from_rgb(59, 130, 246);
+/// 61 points at one per second = a 60-second window.
+pub const HISTORY: usize = 61;
+
+fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let channel = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t) as u8;
+    Color32::from_rgb(
+        channel(a.r(), b.r()),
+        channel(a.g(), b.g()),
+        channel(a.b(), b.b()),
+    )
+}
+
+/// The heat scale: cool blue -> warm amber -> rust red.
+pub fn heat_color(frac: f32) -> Color32 {
+    if frac < 0.5 {
+        lerp(COOL_BLUE, AMBER, frac * 2.0)
+    } else {
+        lerp(AMBER, ACCENT, (frac - 0.5) * 2.0)
+    }
+}
+
+/// Where a temperature sits on the heat scale.
+pub fn temp_frac(celsius: f64) -> f32 {
+    ((celsius - 30.0) / 65.0) as f32
+}
 
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1060.0, 740.0])
-            .with_min_inner_size([760.0, 520.0]),
+            .with_min_inner_size([760.0, 520.0])
+            .with_icon(app_icon()),
         ..Default::default()
     };
     eframe::run_native(
@@ -35,6 +62,54 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
+}
+
+/// A simple original flame, drawn in code: an outer rust teardrop with an
+/// amber core. No external image asset needed.
+fn app_icon() -> egui::IconData {
+    const SIZE: usize = 48;
+    let in_triangle = |px: f32, py: f32, a: (f32, f32), b: (f32, f32), c: (f32, f32)| {
+        let sign = |p: (f32, f32), q: (f32, f32), r: (f32, f32)| {
+            (p.0 - r.0) * (q.1 - r.1) - (q.0 - r.0) * (p.1 - r.1)
+        };
+        let (d1, d2, d3) = (
+            sign((px, py), a, b),
+            sign((px, py), b, c),
+            sign((px, py), c, a),
+        );
+        !((d1 < 0.0 || d2 < 0.0 || d3 < 0.0) && (d1 > 0.0 || d2 > 0.0 || d3 > 0.0))
+    };
+    let in_circle =
+        |px: f32, py: f32, cx: f32, cy: f32, r: f32| (px - cx).powi(2) + (py - cy).powi(2) <= r * r;
+    let mut rgba = vec![0u8; SIZE * SIZE * 4];
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            let (fx, fy) = (x as f32 / SIZE as f32, y as f32 / SIZE as f32);
+            let outer = in_circle(fx, fy, 0.5, 0.62, 0.28)
+                || in_triangle(fx, fy, (0.5, 0.08), (0.28, 0.56), (0.72, 0.56));
+            let inner = in_circle(fx, fy, 0.5, 0.68, 0.15)
+                || in_triangle(fx, fy, (0.5, 0.36), (0.38, 0.66), (0.62, 0.66));
+            let color = if inner {
+                Some(AMBER)
+            } else if outer {
+                Some(ACCENT)
+            } else {
+                None
+            };
+            if let Some(c) = color {
+                let i = (y * SIZE + x) * 4;
+                rgba[i] = c.r();
+                rgba[i + 1] = c.g();
+                rgba[i + 2] = c.b();
+                rgba[i + 3] = 255;
+            }
+        }
+    }
+    egui::IconData {
+        rgba,
+        width: SIZE as u32,
+        height: SIZE as u32,
+    }
 }
 
 #[derive(PartialEq, Clone, Copy)]
@@ -88,6 +163,9 @@ pub struct App {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        let mut fonts = egui::FontDefinitions::default();
+        egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+        cc.egui_ctx.set_fonts(fonts);
         apply_style(&cc.egui_ctx);
         let (cmds, events) = worker::spawn(cc.egui_ctx.clone());
         Self {
@@ -214,14 +292,15 @@ impl App {
             )
             .show(ctx, |ui| {
                 ui.horizontal(|ui| {
+                    use egui_phosphor::regular as icons;
                     match &self.recording {
                         None => {
                             let button = egui::Button::new(
-                                RichText::new("\u{23FA}  Start recording")
+                                RichText::new(format!("{}  Start recording", icons::RECORD))
                                     .size(15.0)
                                     .color(Color32::WHITE),
                             )
-                            .fill(ACCENT)
+                            .fill(RED)
                             .min_size(egui::vec2(180.0, 34.0));
                             if ui.add(button).clicked() {
                                 let _ = self.cmds.send(worker::Cmd::Record);
@@ -230,7 +309,8 @@ impl App {
                         Some(rec) => {
                             let pulse = ((ui.input(|i| i.time) * 3.5).sin() * 0.5 + 0.5) as f32;
                             let label = format!(
-                                "\u{23F9}  Stop recording   {}",
+                                "{}  Stop recording   {}",
+                                icons::STOP,
                                 fmt_time(rec.started.elapsed().as_secs())
                             );
                             let button = egui::Button::new(
@@ -314,10 +394,13 @@ impl App {
                     }
                 });
 
+                use egui_phosphor::regular as icons;
+                let gpu_graph = (!self.hist.gpu_temp_c.is_empty()).then_some(&self.hist.gpu_temp_c);
                 let items = [
-                    NavItem::plain(Page::Overview, "Overview"),
+                    NavItem::plain(Page::Overview, icons::GAUGE, "Overview"),
                     NavItem {
                         page: Page::Cpu,
+                        icon: icons::CPU,
                         title: "CPU",
                         sub: cpu_sub,
                         graph: Some(&self.hist.cpu_pct),
@@ -325,20 +408,22 @@ impl App {
                     },
                     NavItem {
                         page: Page::Gpu,
+                        icon: icons::GRAPHICS_CARD,
                         title: "GPU",
                         sub: gpu_sub,
-                        graph: Some(&self.hist.gpu_temp_c),
+                        graph: gpu_graph,
                         y_max: Some(100.0),
                     },
                     NavItem {
                         page: Page::Memory,
+                        icon: icons::MEMORY,
                         title: "Memory",
                         sub: mem_sub,
                         graph: Some(&self.hist.ram_gb),
                         y_max: Some((ram_total as f64 / 1024.0).max(1.0)),
                     },
-                    NavItem::plain(Page::Recordings, "Recordings"),
-                    NavItem::plain(Page::Settings, "Settings"),
+                    NavItem::plain(Page::Recordings, icons::FILM_STRIP, "Recordings"),
+                    NavItem::plain(Page::Settings, icons::GEAR, "Settings"),
                 ];
                 for item in items {
                     if nav_item(ui, self.page == item.page, &item) {
@@ -353,6 +438,7 @@ impl App {
 
 struct NavItem<'a> {
     page: Page,
+    icon: &'static str,
     title: &'static str,
     sub: Option<String>,
     graph: Option<&'a VecDeque<f64>>,
@@ -360,9 +446,10 @@ struct NavItem<'a> {
 }
 
 impl NavItem<'_> {
-    fn plain(page: Page, title: &'static str) -> Self {
+    fn plain(page: Page, icon: &'static str, title: &'static str) -> Self {
         Self {
             page,
+            icon,
             title,
             sub: None,
             graph: None,
@@ -383,7 +470,11 @@ fn nav_item(ui: &mut egui::Ui, selected: bool, item: &NavItem) -> bool {
         .inner_margin(egui::Margin::symmetric(10.0, 8.0))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
-            ui.label(RichText::new(item.title).strong().size(14.0));
+            ui.label(
+                RichText::new(format!("{}  {}", item.icon, item.title))
+                    .strong()
+                    .size(14.0),
+            );
             if let Some(graph) = item.graph {
                 mini_plot(ui, item.title, graph, item.y_max);
             }
@@ -445,6 +536,21 @@ fn apply_style(ctx: &egui::Context) {
             style.visuals.widgets.open.rounding = egui::Rounding::same(6.0);
             style.visuals.selection.bg_fill = ACCENT;
             style.visuals.hyperlink_color = ACCENT;
+            // Slightly warm surfaces instead of neutral grey.
+            if theme == egui::Theme::Dark {
+                style.visuals.window_fill = Color32::from_rgb(26, 22, 19);
+                style.visuals.panel_fill = Color32::from_rgb(26, 22, 19);
+                style.visuals.extreme_bg_color = Color32::from_rgb(19, 16, 14);
+                style.visuals.faint_bg_color = Color32::from_rgb(38, 32, 27);
+                style.visuals.widgets.noninteractive.bg_stroke.color =
+                    Color32::from_rgb(62, 52, 44);
+            } else {
+                style.visuals.window_fill = Color32::from_rgb(251, 247, 243);
+                style.visuals.panel_fill = Color32::from_rgb(251, 247, 243);
+                style.visuals.faint_bg_color = Color32::from_rgb(243, 236, 229);
+                style.visuals.widgets.noninteractive.bg_stroke.color =
+                    Color32::from_rgb(224, 213, 203);
+            }
         });
     }
 }

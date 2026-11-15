@@ -82,11 +82,15 @@ file in the default browser.
 
 ## Desktop app
 
-`heatlog-gui` is a desktop app laid out like a modern Windows system tool:
+`heatlog-gui` is a desktop app laid out like a modern Windows system tool,
+with a warm "heat" theme: temperature-related visuals run a cool-blue to
+amber to rust-red scale, so colour itself shows how hot things are.
 
 - live monitoring of CPU, GPU and memory (60-second graphs, stats, and a
   sidebar with mini graphs and current values), updating every second
-- a colour-coded health status (normal / warm / hot) on the Overview page
+- an Overview dashboard with round heat-coloured gauges and a plain-language
+  health status ("Running cool" / "Getting warm" / "Too hot — slowing down",
+  or a neutral note when no temperature source exists)
 - one-click recording with a running timer, plus auto-record that starts
   when a configured game launches and stops when it exits
 - a Recordings page listing past sessions with verdict pills and peak
