@@ -114,12 +114,13 @@ fn parse_header(bytes: &[u8]) -> Option<Layout> {
         let readings_at = u32_at(bytes, base + 12)? as usize;
         let reading_size = u32_at(bytes, base + 16)? as usize;
         let count = u32_at(bytes, base + 20)? as usize;
-        // Reading elements end with four doubles, packed or 8-aligned.
-        let value_at = match reading_size {
-            316 => 284,
-            320 => 288,
-            _ => continue,
-        };
+        // A reading element ends with four doubles (value, min, max, avg),
+        // so the current value sits 32 bytes from its end whether the
+        // struct is packed or padded.
+        if !(300..=1024).contains(&reading_size) {
+            continue;
+        }
+        let value_at = reading_size - 32;
         if readings_at == 0 || count == 0 || count > 10_000 {
             continue;
         }
