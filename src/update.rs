@@ -158,27 +158,42 @@ fn verify(body: &[u8], sums: &str, name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Compares dotted numeric versions, ignoring a leading "v". Unparsable
-/// parts count as 0, so a tag like "v0.2.0-rc1" still orders sensibly.
-fn is_newer(candidate: &str, current: &str) -> bool {
-    let parts = |v: &str| -> Vec<u64> {
-        v.trim_start_matches('v')
-            .split(['.', '-', '+'])
-            .map(|part| part.parse().unwrap_or(0))
-            .take(3)
-            .collect()
+/// A version split into its numbers and its pre-release tail, so that
+/// 0.3.0-beta.2 can be recognised as newer than 0.3.0-beta.1 and older
+/// than the 0.3.0 release itself.
+fn parts(version: &str) -> ([u64; 3], Option<(String, u64)>) {
+    let version = version.trim_start_matches('v');
+    let (core, pre) = match version.split_once('-') {
+        Some((core, pre)) => (core, Some(pre)),
+        None => (version, None),
     };
-    let (a, b) = (parts(candidate), parts(current));
-    for i in 0..3 {
-        let (x, y) = (
-            a.get(i).copied().unwrap_or(0),
-            b.get(i).copied().unwrap_or(0),
-        );
-        if x != y {
-            return x > y;
-        }
+    let mut numbers = [0u64; 3];
+    for (slot, part) in numbers.iter_mut().zip(core.split('.')) {
+        *slot = part.parse().unwrap_or(0);
     }
-    false
+    // "beta.2" sorts by its number, not as text, so beta.10 beats beta.9.
+    let pre = pre.map(|pre| match pre.rsplit_once('.') {
+        Some((name, number)) if number.parse::<u64>().is_ok() => {
+            (name.to_string(), number.parse().unwrap_or(0))
+        }
+        _ => (pre.to_string(), 0),
+    });
+    (numbers, pre)
+}
+
+fn is_newer(candidate: &str, current: &str) -> bool {
+    let (a, a_pre) = parts(candidate);
+    let (b, b_pre) = parts(current);
+    if a != b {
+        return a > b;
+    }
+    match (a_pre, b_pre) {
+        // Same numbers: the finished release beats any pre-release of it.
+        (None, None) => false,
+        (None, Some(_)) => true,
+        (Some(_), None) => false,
+        (Some(a), Some(b)) => a > b,
+    }
 }
 
 #[cfg(test)]
@@ -194,6 +209,19 @@ mod tests {
         assert!(!is_newer("v0.1.0", "0.2.0"));
         // A 10-ahead minor must not lose to a bigger patch number.
         assert!(is_newer("0.2.0", "0.1.99"));
+    }
+
+    #[test]
+    fn betas_update_to_later_betas_and_to_the_release() {
+        assert!(is_newer("v0.3.0-beta.2", "0.3.0-beta.1"));
+        assert!(is_newer("v0.3.0-beta.10", "0.3.0-beta.9"));
+        assert!(!is_newer("v0.3.0-beta.1", "0.3.0-beta.2"));
+        // The finished release supersedes its own pre-releases.
+        assert!(is_newer("v0.3.0", "0.3.0-beta.3"));
+        assert!(!is_newer("v0.3.0-beta.3", "0.3.0"));
+        // And a beta of the next version still beats the last release.
+        assert!(is_newer("v0.3.0-beta.1", "0.2.3"));
+        assert!(!is_newer("v0.2.3", "0.3.0-beta.1"));
     }
 
     #[test]
