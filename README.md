@@ -82,16 +82,25 @@ file in the default browser.
 
 ## Desktop app
 
-`heatlog-gui` is a desktop viewer for recorded sessions: a session list with
-colour-coded verdicts, and a session view with the verdict, charts (throttle
-shading, hot zones, hover values) and a collapsible technical section, plus
-one-click export of the HTML report. Build and run it from source:
+`heatlog-gui` is a desktop app laid out like a modern Windows system tool:
+
+- live monitoring of CPU, GPU and memory (60-second graphs, stats, and a
+  sidebar with mini graphs and current values), updating every second
+- a colour-coded health status (normal / warm / hot) on the Overview page
+- one-click recording with a running timer, plus auto-record that starts
+  when a configured game launches and stops when it exits
+- a Recordings page listing past sessions with verdict pills and peak
+  temperatures; opening one shows the verdict, charts with point-snapping
+  tooltips and throttle shading, technical details, and an Export HTML button
+
+Build and run it from source:
 
 ```
 cargo run --release --bin heatlog-gui
 ```
 
-Recording from the GUI is not available yet; record with the CLI.
+Settings (the game list for auto-record, the recording interval) are read
+from the config file described below; in-app editing is planned.
 
 ## Configuration
 

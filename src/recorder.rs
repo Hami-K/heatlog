@@ -12,13 +12,85 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use crate::sensors::cpu::CpuSensor;
 use crate::sensors::cpu_temp::{self, CpuTempSource};
-use crate::sensors::gpu::GpuSensor;
+use crate::sensors::gpu::{GpuInfo, GpuSensor};
 use crate::session::{Sample, SessionMeta, SessionWriter};
 
-pub struct Recorder {
+/// All sensors behind one handle, usable for live monitoring without
+/// recording anything. Create and use it on one thread: the WMI handles
+/// stay on it.
+pub struct Sensors {
     gpu: Option<GpuSensor>,
+    gpu_info: Option<GpuInfo>,
     cpu: CpuSensor,
     temp_source: Option<Box<dyn CpuTempSource>>,
+    cpu_name: String,
+    ram_total_mib: u64,
+}
+
+impl Sensors {
+    /// The first init on a machine can take a few seconds (WMI/COM
+    /// startup, temperature source probing).
+    pub fn init(lhm_url: &str) -> Self {
+        let gpu = GpuSensor::new().ok();
+        let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
+        let mut cpu = CpuSensor::new();
+        let temp_source = cpu_temp::detect(lhm_url);
+        let first_read = cpu.read();
+        Self {
+            gpu,
+            gpu_info,
+            cpu,
+            temp_source,
+            cpu_name: first_read.name,
+            ram_total_mib: first_read.ram_total_mib,
+        }
+    }
+
+    pub fn gpu_available(&self) -> bool {
+        self.gpu.is_some()
+    }
+
+    pub fn gpu_info(&self) -> Option<&GpuInfo> {
+        self.gpu_info.as_ref()
+    }
+
+    pub fn cpu_name(&self) -> &str {
+        &self.cpu_name
+    }
+
+    pub fn ram_total_mib(&self) -> u64 {
+        self.ram_total_mib
+    }
+
+    pub fn cpu_temp_source(&self) -> Option<&'static str> {
+        self.temp_source.as_ref().map(|s| s.label())
+    }
+
+    /// Reads all sensors once. Call at the sampling interval; shorter gaps
+    /// make the delta-based counters meaningless.
+    pub fn read_sample(&mut self) -> Sample {
+        let cpu_snap = self.cpu.read();
+        let gpu_snap = self.gpu.as_ref().and_then(|g| g.read().ok());
+        let temp = self.temp_source.as_mut().and_then(|s| s.read_c().ok());
+        Sample::new(Utc::now(), cpu_snap, gpu_snap, temp)
+    }
+
+    pub fn session_meta(&self, interval_secs: u64, game: Option<String>) -> SessionMeta {
+        SessionMeta {
+            started: Local::now(),
+            interval_secs,
+            cpu_name: self.cpu_name.clone(),
+            ram_total_mib: Some(self.ram_total_mib),
+            gpu_name: self.gpu_info.as_ref().map(|g| g.name.clone()),
+            vram_total_mib: self.gpu_info.as_ref().map(|g| g.vram_total_mib),
+            cpu_temp_source: self.cpu_temp_source().map(str::to_string),
+            game,
+        }
+    }
+}
+
+pub struct Recorder {
+    sensors: Sensors,
     writer: SessionWriter,
     game: Option<(Pid, String)>,
     process_watch: System,
@@ -32,35 +104,17 @@ pub struct Step {
 }
 
 impl Recorder {
-    /// Initialises sensors and creates the session file. The first run on a
-    /// machine can take a few seconds (WMI/COM startup). Call from the
-    /// thread that will do the sampling: the WMI handles stay on it.
     pub fn start(
         lhm_url: &str,
         sessions_dir: &Path,
         interval_secs: u64,
         game: Option<(Pid, String)>,
     ) -> Result<Self> {
-        let gpu = GpuSensor::new().ok();
-        let mut cpu = CpuSensor::new();
-        let temp_source = cpu_temp::detect(lhm_url);
-        let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
-        let first_read = cpu.read();
-        let meta = SessionMeta {
-            started: Local::now(),
-            interval_secs,
-            cpu_name: first_read.name,
-            ram_total_mib: Some(first_read.ram_total_mib),
-            gpu_name: gpu_info.as_ref().map(|g| g.name.clone()),
-            vram_total_mib: gpu_info.as_ref().map(|g| g.vram_total_mib),
-            cpu_temp_source: temp_source.as_ref().map(|s| s.label().to_string()),
-            game: game.as_ref().map(|(_, name)| name.clone()),
-        };
+        let sensors = Sensors::init(lhm_url);
+        let meta = sensors.session_meta(interval_secs, game.as_ref().map(|(_, n)| n.clone()));
         let writer = SessionWriter::create(sessions_dir, &meta)?;
         Ok(Self {
-            gpu,
-            cpu,
-            temp_source,
+            sensors,
             writer,
             game,
             process_watch: System::new(),
@@ -69,11 +123,11 @@ impl Recorder {
     }
 
     pub fn gpu_available(&self) -> bool {
-        self.gpu.is_some()
+        self.sensors.gpu_available()
     }
 
     pub fn cpu_temp_source(&self) -> Option<&'static str> {
-        self.temp_source.as_ref().map(|s| s.label())
+        self.sensors.cpu_temp_source()
     }
 
     pub fn path(&self) -> &Path {
@@ -85,14 +139,9 @@ impl Recorder {
     }
 
     /// Reads all sensors once, appends the sample to the session file, and
-    /// checks whether the watched game is still running. Call at the
-    /// recording interval; shorter gaps make the delta-based counters
-    /// meaningless.
+    /// checks whether the watched game is still running.
     pub fn step(&mut self) -> Result<Step> {
-        let cpu_snap = self.cpu.read();
-        let gpu_snap = self.gpu.as_ref().and_then(|g| g.read().ok());
-        let temp = self.temp_source.as_mut().and_then(|s| s.read_c().ok());
-        let sample = Sample::new(Utc::now(), cpu_snap, gpu_snap, temp);
+        let sample = self.sensors.read_sample();
         self.writer.append(&sample)?;
         self.count += 1;
 
@@ -114,18 +163,26 @@ impl Recorder {
     }
 }
 
-/// Polls the process list every two seconds until a process whose name
-/// matches one of `games` (case-insensitive) appears, or the stop flag is
-/// set (returns None).
+/// One pass over the process list: the first process whose name matches one
+/// of `games`, case-insensitively.
+pub fn scan_for_game(sys: &mut System, games: &[String]) -> Option<(Pid, String)> {
+    sys.refresh_processes(ProcessesToUpdate::All, true);
+    sys.processes().values().find_map(|process| {
+        let name = process.name().to_string_lossy();
+        games
+            .iter()
+            .any(|g| g.eq_ignore_ascii_case(&name))
+            .then(|| (process.pid(), name.into_owned()))
+    })
+}
+
+/// Polls the process list every two seconds until a matching process
+/// appears, or the stop flag is set (returns None).
 pub fn wait_for_game(games: &[String], stop: &AtomicBool) -> Option<(Pid, String)> {
     let mut sys = System::new();
     while !stop.load(Ordering::SeqCst) {
-        sys.refresh_processes(ProcessesToUpdate::All, true);
-        for process in sys.processes().values() {
-            let name = process.name().to_string_lossy();
-            if games.iter().any(|g| g.eq_ignore_ascii_case(&name)) {
-                return Some((process.pid(), name.into_owned()));
-            }
+        if let Some(found) = scan_for_game(&mut sys, games) {
+            return Some(found);
         }
         std::thread::sleep(Duration::from_secs(2));
     }
