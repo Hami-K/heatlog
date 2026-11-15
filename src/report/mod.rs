@@ -1,3 +1,4 @@
+pub mod causes;
 pub mod charts;
 pub mod html;
 
@@ -29,6 +30,21 @@ pub struct Summary {
     pub cpu_temp_source: Option<String>,
     pub ram_peak_mib: u64,
     pub ram_total_mib: Option<u64>,
+    pub fan_rpm: Option<Series>,
+    pub cooling: Cooling,
+}
+
+/// What the fans were doing while the hardware throttled, which is the
+/// difference between "this laptop cannot cool itself" and "something is
+/// holding the fans back".
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum Cooling {
+    /// No fan readings, or nothing throttled, so nothing to say.
+    Unknown,
+    /// Fans were at full and the hardware still slowed down.
+    AtLimit,
+    /// The hardware slowed down while the fans still had room.
+    FansHeldBack,
 }
 
 pub struct Series {
@@ -97,6 +113,13 @@ pub fn analyze(session: &Session) -> Result<Summary> {
         cpu_temp_source: session.meta.cpu_temp_source.clone(),
         ram_peak_mib: samples.iter().map(|s| s.ram_used_mib).max().unwrap_or(0),
         ram_total_mib: session.meta.ram_total_mib,
+        fan_rpm: series(
+            samples
+                .iter()
+                .zip(&offsets)
+                .filter_map(|(s, &t)| s.fastest_fan().map(|rpm| (t, f64::from(rpm)))),
+        ),
+        cooling: cooling_verdict(samples),
     })
 }
 
@@ -296,7 +319,51 @@ pub fn verdict(s: &Summary) -> (&'static str, String) {
             }
         });
     }
+    match s.cooling {
+        Cooling::AtLimit => lines.push(
+            "The fans were at full speed when that happened, so this is as much cooling as              the machine has."
+                .to_string(),
+        ),
+        Cooling::FansHeldBack => lines.push(
+            "The fans still had room to spin faster, so a fan curve or power plan may be              holding them back - check the laptop maker's own utility."
+                .to_string(),
+        ),
+        Cooling::Unknown => {}
+    }
     (class, lines.join(" "))
+}
+
+/// Compares fan speed during thermal throttling against the fastest the
+/// fans ran all session. Near that ceiling means the cooling system was
+/// giving everything it had.
+fn cooling_verdict(samples: &[Sample]) -> Cooling {
+    let fastest = samples.iter().filter_map(Sample::fastest_fan).max();
+    let Some(fastest) = fastest.filter(|rpm| *rpm > 0) else {
+        return Cooling::Unknown;
+    };
+    let throttled: Vec<u32> = samples
+        .iter()
+        .filter(|s| {
+            s.gpu.as_ref().is_some_and(|g| {
+                g.throttle
+                    .iter()
+                    .any(|r| r.contains("thermal") || r.contains("slowdown"))
+            })
+        })
+        .filter_map(Sample::fastest_fan)
+        .collect();
+    if throttled.is_empty() {
+        return Cooling::Unknown;
+    }
+    let mean = throttled.iter().map(|rpm| f64::from(*rpm)).sum::<f64>() / throttled.len() as f64;
+    let share = mean / f64::from(fastest);
+    if share >= 0.95 {
+        Cooling::AtLimit
+    } else if share <= 0.85 {
+        Cooling::FansHeldBack
+    } else {
+        Cooling::Unknown
+    }
 }
 
 fn series(points: impl Iterator<Item = (u64, f64)>) -> Option<Series> {
@@ -417,8 +484,37 @@ pub fn print(s: &Summary) {
         None => println!("  Clock drops under load (heuristic): not enough high-load samples"),
     }
 
+    if let Some(fan) = &s.fan_rpm {
+        println!();
+        println!("FANS");
+        print_series("Speed", fan, "rpm", 0);
+        match s.cooling {
+            Cooling::AtLimit => {
+                println!("  Fans were at full speed while the GPU throttled: cooling limit.")
+            }
+            Cooling::FansHeldBack => {
+                println!("  The GPU throttled while the fans still had room - check the fan curve.")
+            }
+            Cooling::Unknown => {}
+        }
+    }
+
     println!();
     println!("RAM  peak {} MiB", s.ram_peak_mib);
+}
+
+/// Prints what might explain the session's slow moments. Always labelled:
+/// these are suggestions, not findings.
+pub fn print_causes(found: &[causes::Cause]) {
+    if found.is_empty() {
+        return;
+    }
+    println!();
+    println!("POSSIBLE CAUSES (suggestions, not certainties)");
+    for cause in found {
+        println!("  {}", cause.headline);
+        println!("    {}", cause.detail);
+    }
 }
 
 fn print_series(label: &str, series: &Series, unit: &str, decimals: usize) {
@@ -464,6 +560,8 @@ mod tests {
             }),
             cpu_temp_c: Some(70.0 + i as f32),
             ram_used_mib: 12_000 + i as u64,
+            fans: Vec::new(),
+            top_procs: Vec::new(),
         }
     }
 
@@ -614,6 +712,8 @@ mod tests {
             cpu_temp_source: None,
             ram_peak_mib: 1000,
             ram_total_mib: None,
+            fan_rpm: None,
+            cooling: Cooling::Unknown,
         };
         let (class, text) = verdict(&summary);
         assert_eq!(class, "bad");

@@ -8,6 +8,7 @@ use anyhow::Result;
 
 use super::charts::{self, ChartData, MAX_POINTS};
 use super::{fmt_time, verdict, Series, Summary};
+use crate::report;
 use crate::session::Session;
 
 const CHART_W: f64 = 860.0;
@@ -46,12 +47,13 @@ pub fn render(session: &Session, summary: &Summary) -> Result<String> {
          aggressive power plan). The GPU reports throttling directly; for the CPU, \
          Windows offers no such signal, so heatlog estimates it from clock drops \
          during heavy load.</p></details>\n\
-         {headline}\n{charts_html}\n\
+         {headline}\n{causes}\n{charts_html}\n\
          <details><summary>Technical details</summary>{technical}</details>\n\
          {JS}</body></html>\n",
         started = summary.started.format("%Y-%m-%d %H:%M"),
         meta = meta_line(summary),
         headline = headline(summary),
+        causes = causes_html(&report::causes::causes(session, summary)),
         technical = technical(summary),
     ))
 }
@@ -68,6 +70,25 @@ fn meta_line(s: &Summary) -> String {
         s.sample_count,
         s.interval_secs
     )
+}
+
+/// Suggestions, presented as suggestions.
+fn causes_html(found: &[report::causes::Cause]) -> String {
+    if found.is_empty() {
+        return String::new();
+    }
+    let mut out = String::from(
+        "<h2>Possible causes</h2><p class=\"note\">Read off the recording, so these are          suggestions rather than certainties.</p><ul class=\"causes\">",
+    );
+    for cause in found {
+        let _ = write!(
+            out,
+            "<li><strong>{}</strong><br>{}</li>",
+            cause.headline, cause.detail
+        );
+    }
+    out.push_str("</ul>");
+    out
 }
 
 fn gb(mib: u64) -> f64 {
@@ -202,6 +223,25 @@ fn technical(s: &Summary) -> String {
         None => out.push_str(
             "<p>Estimated clock drops under load: not enough high-load samples to judge</p>",
         ),
+    }
+    if let Some(fan) = &s.fan_rpm {
+        let _ = write!(
+            out,
+            "<h2>Fans</h2><table>{}</table>",
+            row("Speed", fan, "rpm")
+        );
+        let note = match s.cooling {
+            report::Cooling::AtLimit => {
+                "Fans were at full speed while the GPU throttled: cooling limit reached."
+            }
+            report::Cooling::FansHeldBack => {
+                "The GPU throttled while the fans still had room to spin faster."
+            }
+            report::Cooling::Unknown => "",
+        };
+        if !note.is_empty() {
+            let _ = write!(out, "<p>{note}</p>");
+        }
     }
     let _ = write!(out, "<p>RAM peak: {} MiB</p>", s.ram_peak_mib);
     out
@@ -348,7 +388,7 @@ svg text{fill:var(--muted);font-size:11px}\
 #tip{position:fixed;background:var(--bg);border:1px solid var(--grid);\
 padding:2px 8px;border-radius:4px;font-size:12px;pointer-events:none;\
 font-variant-numeric:tabular-nums}\
-ul{margin:4px 0;padding-left:20px}";
+ul{margin:4px 0;padding-left:20px}.causes li{margin-bottom:6px}";
 
 /// Hover tooltip (time + value at the nearest point). Inline and
 /// dependency-free, so the file still opens offline.

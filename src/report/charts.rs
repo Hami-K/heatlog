@@ -68,6 +68,7 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
 
     // Each chart owns its band list; the lists are a handful of episode
     // ranges at most, so the clones are trivial.
+    let gpu_bands_for_fans = gpu_bands.clone();
     let charts = vec![
         ChartData {
             title: "GPU temperature",
@@ -104,7 +105,7 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
                 gpu_shaded,
             ),
             points: pick(&|s| s.gpu.as_ref().map(|g| g.power_w)),
-            bands: gpu_bands,
+            bands: gpu_bands.clone(),
             band_class: "gpu",
             y: YAxis::FromZero,
         },
@@ -139,6 +140,19 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
             }),
             bands: cpu_bands.clone(),
             band_class: "cpu",
+            y: YAxis::FromZero,
+        },
+        ChartData {
+            title: "Fan speed",
+            unit: "rpm",
+            explain: explain(
+                "How hard the fans are working. A flat line at the top means they are                  already giving everything they have.",
+                &gpu_bands,
+                gpu_shaded,
+            ),
+            points: pick(&|s| s.fastest_fan().map(f64::from)),
+            bands: gpu_bands_for_fans,
+            band_class: "gpu",
             y: YAxis::FromZero,
         },
         ChartData {
