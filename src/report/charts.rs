@@ -112,7 +112,7 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
             title: "CPU usage",
             unit: "%",
             explain: explain(
-                "How busy the processor is, from 0 to 100%.",
+                "How much of the processor is in use, from 0 to 100%.",
                 &cpu_bands,
                 cpu_shaded,
             ),

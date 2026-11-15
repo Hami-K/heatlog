@@ -1,4 +1,5 @@
-//! The sidebar pages: Overview, CPU, GPU, Memory, Recordings, Settings.
+//! The sidebar pages: Overview, CPU, GPU, Memory, Recordings, Settings,
+//! and the CPU-temperature setup flow.
 
 use std::collections::VecDeque;
 use std::path::PathBuf;
@@ -12,6 +13,7 @@ use heatlog::report::{self, fmt_time};
 use heatlog::session;
 
 use crate::view::{hover_nearest, TimeFmt};
+use crate::worker;
 use crate::{card, heat_color, temp_frac, usage_color, App, ACCENT, AMBER, GREEN, RED};
 
 // ---------------------------------------------------------------- live pages
@@ -84,7 +86,7 @@ pub fn cpu(ui: &mut egui::Ui, app: &App) {
     ui.heading(format!("{}  {name}", icons::CPU));
     ui.add_space(6.0);
     live_plot(ui, "cpu", &app.hist.cpu_pct, Some(100.0), |v| {
-        format!("CPU {v:.0}% busy")
+        format!("CPU usage {v:.0}%")
     });
     ui.add_space(10.0);
 
@@ -101,10 +103,7 @@ pub fn cpu(ui: &mut egui::Ui, app: &App) {
         stats.push(("Logical processors", s.cpu.per_core_mhz.len().to_string()));
         match s.cpu_temp_c {
             Some(t) => stats.push(("Temperature", format!("{t:.0} C"))),
-            None => stats.push((
-                "Temperature",
-                "unavailable (start LibreHardwareMonitor's web server)".to_string(),
-            )),
+            None => stats.push(("Temperature", "unavailable - see Settings".to_string())),
         }
     } else {
         stats.push(("Status", "starting sensors...".to_string()));
@@ -191,20 +190,18 @@ pub fn memory(ui: &mut egui::Ui, app: &App) {
 
 // -------------------------------------------------------------------- gauges
 
-/// Round gauge: a 270-degree arc in the given color with a big number in
-/// the middle. The fraction is animated, so changes glide.
-fn gauge(ui: &mut egui::Ui, id: &str, frac: f32, color: Color32, center: String, label: &str) {
-    let frac =
-        ui.ctx()
-            .animate_value_with_time(egui::Id::new(("gauge", id)), frac.clamp(0.0, 1.0), 0.5);
-    let size = 120.0;
+/// Round gauge: a 270-degree arc with a big number in the middle. The
+/// caller passes an already-smoothed fraction, so drawing never drives
+/// repaints.
+fn gauge(ui: &mut egui::Ui, frac: f32, color: Color32, center: String, label: &str) {
+    let size = 118.0;
     let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
     let center_pos = rect.center();
-    let radius = size * 0.42;
+    let radius = size * 0.40;
     // Screen y points down, so 135 degrees is the lower-left: the arc
     // sweeps up and over, leaving the classic gauge opening at the bottom.
     let start = 0.75 * std::f32::consts::PI;
-    let sweep = 1.5 * std::f32::consts::PI; // 270 deg
+    let sweep = 1.5 * std::f32::consts::PI;
 
     let arc = |to: f32, stroke_color: Color32, width: f32| {
         let n = 48;
@@ -218,6 +215,7 @@ fn gauge(ui: &mut egui::Ui, id: &str, frac: f32, color: Color32, center: String,
     };
     let track = ui.visuals().widgets.noninteractive.bg_stroke.color;
     ui.painter().add(arc(sweep, track, 7.0));
+    let frac = frac.clamp(0.0, 1.0);
     if frac > 0.01 {
         ui.painter().add(arc(sweep * frac, color, 7.0));
     }
@@ -225,11 +223,11 @@ fn gauge(ui: &mut egui::Ui, id: &str, frac: f32, color: Color32, center: String,
         center_pos,
         egui::Align2::CENTER_CENTER,
         center,
-        egui::FontId::proportional(22.0),
+        egui::FontId::proportional(21.0),
         ui.visuals().strong_text_color(),
     );
     ui.painter().text(
-        center_pos + egui::vec2(0.0, radius * 0.78),
+        center_pos + egui::vec2(0.0, radius * 0.82),
         egui::Align2::CENTER_CENTER,
         label,
         egui::FontId::proportional(12.0),
@@ -239,89 +237,91 @@ fn gauge(ui: &mut egui::Ui, id: &str, frac: f32, color: Color32, center: String,
 
 // ------------------------------------------------------------------ overview
 
-/// Returns a page to navigate to, if a button asked for one.
+/// Returns a page to navigate to, if something on the page asked.
 pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
     let mut nav = None;
     ui.heading(format!("{}  Overview", icons::GAUGE));
     ui.add_space(6.0);
 
     let (color, icon, word, detail) = health(app);
-    let temps_unavailable = word == "Temperatures unavailable";
+    let needs_setup = app
+        .info
+        .as_ref()
+        .is_some_and(|i| i.cpu_temp_source.is_none());
     card(ui, |ui| {
+        // The row must be a horizontal first: a bare right-to-left layout
+        // would claim the panel's whole height and push the page off.
         ui.horizontal(|ui| {
             ui.label(RichText::new(icon).size(22.0).color(color));
-            ui.label(RichText::new(word).strong().size(17.0));
-            ui.label(RichText::new(detail).weak());
-            if temps_unavailable {
-                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.button("Set up CPU temperature").clicked() {
-                        nav = Some(crate::Page::TempSetup);
-                    }
-                });
-            }
+            ui.label(RichText::new(word).strong().size(16.0));
+            // Button goes in the right-aligned remainder before the detail
+            // text, so the text truncates instead of running underneath.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if needs_setup && ui.button("Set up").clicked() {
+                    nav = Some(crate::Page::TempSetup);
+                }
+                ui.add(egui::Label::new(RichText::new(detail).weak()).truncate());
+            });
         });
     });
     ui.add_space(10.0);
 
-    // Full-width gauge row: one evenly-spaced column per measurable thing.
-    // Usage gauges run amber-to-rust; temperature gauges use the heat scale.
+    // Full-width gauge row: one evenly spaced column per thing this
+    // machine can actually measure.
     card(ui, |ui| {
         if let Some(s) = &app.latest {
             struct G {
-                id: &'static str,
                 frac: f32,
                 color: Color32,
                 center: String,
                 label: &'static str,
             }
+            let usage = app.smooth(|s| s.cpu.usage_pct);
             let mut gauges = vec![G {
-                id: "cpu-busy",
-                frac: s.cpu.usage_pct / 100.0,
-                color: usage_color(s.cpu.usage_pct / 100.0),
-                center: format!("{:.0}%", animated(ui, "cpu-busy-n", s.cpu.usage_pct)),
-                label: "CPU busy",
+                frac: usage / 100.0,
+                color: usage_color(usage / 100.0),
+                center: format!("{usage:.0}%"),
+                label: "CPU usage",
             }];
             let total_gb = app.info.as_ref().map(|i| i.ram_total_mib).unwrap_or(0) as f32 / 1024.0;
             if total_gb > 0.0 {
-                let used_gb = s.ram_used_mib as f32 / 1024.0;
+                let used_gb = app.smooth(|s| s.ram_used_mib as f32 / 1024.0);
                 gauges.push(G {
-                    id: "mem",
                     frac: used_gb / total_gb,
                     color: usage_color(used_gb / total_gb),
-                    center: format!("{:.1} GB", animated(ui, "mem-n", used_gb)),
+                    center: format!("{used_gb:.1} GB"),
                     label: "Memory",
                 });
             }
-            if let Some(g) = &s.gpu {
-                let util = g.util_pct as f32 / 100.0;
+            if s.gpu.is_some() {
+                let util = app.smooth(|s| s.gpu.as_ref().map_or(0.0, |g| g.util_pct as f32));
                 gauges.push(G {
-                    id: "gpu-busy",
-                    frac: util,
-                    color: usage_color(util),
-                    center: format!("{:.0}%", animated(ui, "gpu-busy-n", g.util_pct as f32)),
-                    label: "GPU busy",
+                    frac: util / 100.0,
+                    color: usage_color(util / 100.0),
+                    center: format!("{util:.0}%"),
+                    label: "GPU usage",
                 });
+                let temp = app.smooth(|s| s.gpu.as_ref().map_or(0.0, |g| g.temp_c as f32));
                 gauges.push(G {
-                    id: "gpu-temp",
-                    frac: temp_frac(f64::from(g.temp_c)),
-                    color: heat_color(temp_frac(f64::from(g.temp_c))),
-                    center: format!("{:.0} C", animated(ui, "gpu-temp-n", g.temp_c as f32)),
+                    frac: temp_frac(f64::from(temp)),
+                    color: heat_color(temp_frac(f64::from(temp))),
+                    center: format!("{temp:.0} C"),
                     label: "GPU temp",
                 });
             }
-            if let Some(t) = s.cpu_temp_c {
+            if s.cpu_temp_c.is_some() {
+                let temp = app.smooth(|s| s.cpu_temp_c.unwrap_or(0.0));
                 gauges.push(G {
-                    id: "cpu-temp",
-                    frac: temp_frac(f64::from(t)),
-                    color: heat_color(temp_frac(f64::from(t))),
-                    center: format!("{:.0} C", animated(ui, "cpu-temp-n", t)),
+                    frac: temp_frac(f64::from(temp)),
+                    color: heat_color(temp_frac(f64::from(temp))),
+                    center: format!("{temp:.0} C"),
                     label: "CPU temp",
                 });
             }
             ui.columns(gauges.len(), |cols| {
                 for (col, g) in cols.iter_mut().zip(&gauges) {
                     col.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
-                        gauge(ui, g.id, g.frac, g.color, g.center.clone(), g.label);
+                        gauge(ui, g.frac, g.color, g.center.clone(), g.label);
                     });
                 }
             });
@@ -333,14 +333,14 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
 
     ui.columns(2, |cols| {
         card(&mut cols[0], |ui| {
-            ui.label(RichText::new("Activity — last 60 seconds").weak());
+            ui.label(RichText::new("Activity - last 60 seconds").weak());
             activity_chart(ui, app);
             ui.horizontal(|ui| {
-                ui.label(RichText::new("—").color(ACCENT).strong());
-                ui.label(RichText::new("CPU busy").weak().small());
+                ui.label(RichText::new("--").color(ACCENT).strong());
+                ui.label(RichText::new("CPU usage").weak().small());
                 if !app.hist.gpu_util_pct.is_empty() {
-                    ui.label(RichText::new("—").color(AMBER).strong());
-                    ui.label(RichText::new("GPU busy").weak().small());
+                    ui.label(RichText::new("--").color(AMBER).strong());
+                    ui.label(RichText::new("GPU usage").weak().small());
                 }
             });
         });
@@ -351,7 +351,7 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
                     ui.label(RichText::new(&row.started).strong().size(16.0));
                     let mut line = row.duration.clone();
                     if let Some(game) = &row.game {
-                        line.push_str("  ·  ");
+                        line.push_str("  -  ");
                         line.push_str(game);
                     }
                     ui.label(RichText::new(line).weak());
@@ -369,14 +369,13 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
                 }
                 None => {
                     ui.label(
-                        RichText::new("No recordings yet — hit Start recording up top.").weak(),
+                        RichText::new("No recordings yet - hit Start recording up top.").weak(),
                     );
                 }
             }
-            // Recording state as a quiet one-liner, not a giant card.
             let status_line = match &app.recording {
                 Some(rec) => format!(
-                    "{}  recording · {}",
+                    "{}  recording - {}",
                     icons::RECORD,
                     fmt_time(rec.started.elapsed().as_secs())
                 ),
@@ -397,7 +396,7 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
 }
 
 fn activity_chart(ui: &mut egui::Ui, app: &App) {
-    let series = |data: &std::collections::VecDeque<f64>| -> Vec<[f64; 2]> {
+    let series = |data: &VecDeque<f64>| -> Vec<[f64; 2]> {
         data.iter()
             .enumerate()
             .map(|(i, &v)| [i as f64 - (data.len() as f64 - 1.0), v])
@@ -434,53 +433,6 @@ fn activity_chart(ui: &mut egui::Ui, app: &App) {
         });
 }
 
-/// Placeholder until the temperature-source decision: explains the state
-/// and the current manual route.
-pub fn temp_setup(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
-    let mut nav = None;
-    if ui.button("< Overview").clicked() {
-        nav = Some(crate::Page::Overview);
-    }
-    ui.heading(format!("{}  Set up CPU temperature", icons::THERMOMETER));
-    ui.add_space(6.0);
-    card(ui, |ui| {
-        match app.info.as_ref().and_then(|i| i.cpu_temp_source) {
-            Some(source) => {
-                ui.label(format!("CPU temperature is already working, via {source}."));
-            }
-            None => {
-                ui.label(
-                    "Windows does not let apps read the CPU temperature directly, so heatlog \
-                     borrows the reading from a monitoring app when one is running.",
-                );
-                ui.add_space(6.0);
-                ui.label(RichText::new("The current manual route:").strong());
-                ui.label("1.  Install LibreHardwareMonitor (free, open source):");
-                ui.label(
-                    RichText::new("    winget install LibreHardwareMonitor.LibreHardwareMonitor")
-                        .monospace(),
-                );
-                ui.label("2.  In it, enable Options > Remote Web Server.");
-                ui.label("3.  Restart heatlog.");
-                ui.add_space(6.0);
-                ui.label(
-                    RichText::new(
-                        "A guided in-app setup with automatic source detection is planned \
-                         for this page.",
-                    )
-                    .weak(),
-                );
-            }
-        }
-    });
-    nav
-}
-
-fn animated(ui: &egui::Ui, id: &str, target: f32) -> f32 {
-    ui.ctx()
-        .animate_value_with_time(egui::Id::new(("num", id)), target, 0.5)
-}
-
 fn health(app: &App) -> (Color32, &'static str, &'static str, String) {
     let Some(s) = &app.latest else {
         return (
@@ -500,8 +452,7 @@ fn health(app: &App) -> (Color32, &'static str, &'static str, String) {
             Color32::GRAY,
             icons::THERMOMETER,
             "Temperatures unavailable",
-            "no GPU detected and no CPU temperature source — usage and clocks are still live"
-                .to_string(),
+            "set up a sensor source to see them".to_string(),
         );
     }
     if throttling || gpu_temp.is_some_and(|t| t >= 85) || cpu_temp.is_some_and(|t| t >= 90.0) {
@@ -510,7 +461,7 @@ fn health(app: &App) -> (Color32, &'static str, &'static str, String) {
         } else {
             "temperatures at throttle levels".to_string()
         };
-        (RED, icons::FLAME, "Too hot — slowing down", why)
+        (RED, icons::FLAME, "Too hot - slowing down", why)
     } else if gpu_temp.is_some_and(|t| t >= 75) || cpu_temp.is_some_and(|t| t >= 80.0) {
         (
             AMBER,
@@ -525,6 +476,172 @@ fn health(app: &App) -> (Color32, &'static str, &'static str, String) {
             "Running cool",
             "temperatures look fine".to_string(),
         )
+    }
+}
+
+// ------------------------------------------------- CPU temperature setup
+
+/// Guided setup for a CPU temperature source. heatlog never changes another
+/// app's settings; it installs through winget and explains the two clicks
+/// the user has to make themselves.
+pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
+    let mut nav = None;
+    if ui.button("< Overview").clicked() {
+        nav = Some(crate::Page::Overview);
+    }
+    ui.heading(format!("{}  Set up CPU temperature", icons::THERMOMETER));
+    ui.add_space(6.0);
+
+    let avail = app.info.as_ref().map(|i| &i.avail);
+    if let Some(source) = app.info.as_ref().and_then(|i| i.cpu_temp_source) {
+        card(ui, |ui| {
+            ui.label(
+                RichText::new(format!(
+                    "{}  CPU temperature is working, via {source}.",
+                    icons::CHECK_CIRCLE
+                ))
+                .color(GREEN)
+                .strong(),
+            );
+        });
+        ui.add_space(8.0);
+    }
+
+    card(ui, |ui| {
+        ui.label(
+            "Windows has no unprivileged way to read CPU temperature, so heatlog borrows the \
+             reading from a monitoring app that already ships a signed driver. Either of these \
+             works; HWiNFO is the smoother one.",
+        );
+    });
+    ui.add_space(10.0);
+
+    card(ui, |ui| {
+        ui.label(RichText::new("HWiNFO (recommended)").strong().size(15.0));
+        match avail {
+            Some(a) if a.hwinfo_sharing => {
+                ui.label(
+                    RichText::new(format!("{}  Running and sharing sensors.", icons::CHECK))
+                        .color(GREEN),
+                );
+            }
+            Some(a) if a.hwinfo_running => {
+                ui.label(
+                    RichText::new(format!(
+                        "{}  Running, but not sharing sensors yet.",
+                        icons::WARNING
+                    ))
+                    .color(AMBER),
+                );
+            }
+            _ => {
+                ui.label(RichText::new("Not running.").weak());
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(
+                "Windows will ask for admin permission during the install, because HWiNFO \
+                 installs a hardware-monitoring driver.",
+            )
+            .weak()
+            .small(),
+        );
+        if ui
+            .button(format!("{}  Install HWiNFO", icons::DOWNLOAD_SIMPLE))
+            .clicked()
+        {
+            app.status = Some(install_hwinfo());
+        }
+        ui.add_space(6.0);
+        ui.label("Then, in HWiNFO:");
+        ui.label("1.  Start it in Sensors-only mode.");
+        ui.label("2.  Settings > check \"Shared Memory Support\".");
+        ui.label("3.  Leave HWiNFO running while you game.");
+        ui.label(
+            RichText::new(
+                "The free version switches Shared Memory Support off again after 12 hours; \
+                 heatlog will say so when that happens.",
+            )
+            .weak()
+            .small(),
+        );
+    });
+    ui.add_space(10.0);
+
+    card(ui, |ui| {
+        ui.label(
+            RichText::new("LibreHardwareMonitor (alternative)")
+                .strong()
+                .size(15.0),
+        );
+        match avail {
+            Some(a) if a.lhm_web => {
+                ui.label(
+                    RichText::new(format!("{}  Web server reachable.", icons::CHECK)).color(GREEN),
+                );
+            }
+            Some(a) if a.lhm_running => {
+                ui.label(
+                    RichText::new(format!(
+                        "{}  Running, but its web server is off.",
+                        icons::WARNING
+                    ))
+                    .color(AMBER),
+                );
+            }
+            _ => {
+                ui.label(RichText::new("Not running.").weak());
+            }
+        }
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new("winget install LibreHardwareMonitor.LibreHardwareMonitor").monospace(),
+        );
+        ui.label("Then enable Options > Remote Web Server and leave it running.");
+    });
+    ui.add_space(10.0);
+
+    ui.horizontal(|ui| {
+        if ui
+            .button(format!("{}  Check again", icons::ARROWS_CLOCKWISE))
+            .clicked()
+        {
+            app.send(worker::Cmd::Reprobe);
+            app.status = Some("Looking for a temperature source...".to_string());
+        }
+        if let Some(status) = &app.status {
+            ui.label(RichText::new(status).weak());
+        }
+    });
+    nav
+}
+
+/// Installs through winget's official package, or falls back to HWiNFO's
+/// own download page. Runs in a visible console so the user can see the
+/// admin prompt and the progress.
+fn install_hwinfo() -> String {
+    let winget = std::process::Command::new("cmd")
+        .args([
+            "/C",
+            "start",
+            "",
+            "cmd",
+            "/K",
+            "winget install --id REALiX.HWiNFO -e --accept-package-agreements \
+             --accept-source-agreements",
+        ])
+        .spawn();
+    match winget {
+        Ok(_) => "Installing HWiNFO in a new window - accept the admin prompt, then come \
+                  back and use Check again."
+            .to_string(),
+        Err(_) => {
+            let _ = std::process::Command::new("cmd")
+                .args(["/C", "start", "", "https://www.hwinfo.com/download/"])
+                .spawn();
+            "winget is not available, so HWiNFO's download page was opened instead.".to_string()
+        }
     }
 }
 
@@ -670,8 +787,8 @@ fn row_spark(ui: &mut egui::Ui, id: &str, data: &[f64]) {
         .map(|(i, &v)| [i as f64, v])
         .collect();
     Plot::new(format!("spark-{id}"))
-        .width(140.0)
-        .height(30.0)
+        .width(130.0)
+        .height(28.0)
         .show_axes(false)
         .show_grid(false)
         .show_background(false)
@@ -691,22 +808,49 @@ fn row_spark(ui: &mut egui::Ui, id: &str, data: &[f64]) {
         });
 }
 
-pub fn recordings(ui: &mut egui::Ui, recordings: &Recordings) -> Option<PathBuf> {
-    ui.heading(format!("{}  Recordings", icons::FILM_STRIP));
+pub fn recordings(ui: &mut egui::Ui, app: &mut App) -> Option<PathBuf> {
+    ui.horizontal(|ui| {
+        ui.heading(format!("{}  Recordings", icons::FILM_STRIP));
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if app.confirm_delete_all {
+                ui.label(
+                    RichText::new(format!(
+                        "Delete all {} recordings?",
+                        app.recordings.rows.len()
+                    ))
+                    .color(AMBER),
+                );
+                if ui.button("Yes, delete all").clicked() {
+                    app.delete_all_recordings(ui.ctx());
+                }
+                if ui.button("Cancel").clicked() {
+                    app.confirm_delete_all = false;
+                }
+            } else if !app.recordings.rows.is_empty()
+                && ui.button(format!("{}  Delete all", icons::TRASH)).clicked()
+            {
+                app.confirm_delete_all = true;
+            }
+        });
+    });
     ui.add_space(6.0);
-    if let Some(error) = &recordings.error {
+    if let Some(error) = &app.recordings.error {
         ui.colored_label(RED, error);
         return None;
     }
-    if recordings.rows.is_empty() {
+    if app.recordings.rows.is_empty() {
         ui.label(
             "No recordings yet. Hit Start recording, or turn on auto-record and launch a game.",
         );
         return None;
     }
+
     let mut open = None;
+    let mut delete = None;
+    let mut confirm = app.confirm_delete.clone();
     egui::ScrollArea::vertical().show(ui, |ui| {
-        for row in &recordings.rows {
+        for row in &app.recordings.rows {
+            let pending = confirm.as_deref() == Some(row.path.as_path());
             let response = egui::Frame::none()
                 .fill(ui.visuals().faint_bg_color)
                 .stroke(egui::Stroke::new(
@@ -722,14 +866,29 @@ pub fn recordings(ui: &mut egui::Ui, recordings: &Recordings) -> Option<PathBuf>
                             ui.label(RichText::new(&row.started).strong());
                             let mut line = row.duration.clone();
                             if let Some(game) = &row.game {
-                                line.push_str("  ·  ");
+                                line.push_str("  -  ");
                                 line.push_str(game);
                             }
                             ui.label(RichText::new(line).weak());
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            match &row.extra {
-                                Some(extra) => {
+                            if pending {
+                                ui.label(RichText::new("Delete?").color(AMBER));
+                                if ui.button("Yes").clicked() {
+                                    delete = Some(row.path.clone());
+                                }
+                                if ui.button("No").clicked() {
+                                    confirm = None;
+                                }
+                            } else {
+                                if ui
+                                    .button(RichText::new(icons::TRASH))
+                                    .on_hover_text("Delete this recording")
+                                    .clicked()
+                                {
+                                    confirm = Some(row.path.clone());
+                                }
+                                if let Some(extra) = &row.extra {
                                     verdict_pill(ui, extra.class);
                                     let mut peaks = Vec::new();
                                     if let Some(t) = extra.gpu_peak_c {
@@ -739,11 +898,10 @@ pub fn recordings(ui: &mut egui::Ui, recordings: &Recordings) -> Option<PathBuf>
                                         peaks.push(format!("CPU peak {t:.0} C"));
                                     }
                                     if !peaks.is_empty() {
-                                        ui.label(RichText::new(peaks.join("  ·  ")).weak());
+                                        ui.label(RichText::new(peaks.join("  -  ")).weak());
                                     }
                                     row_spark(ui, &row.started, &extra.spark);
-                                }
-                                None => {
+                                } else {
                                     ui.label(RichText::new("analyzing...").weak());
                                 }
                             }
@@ -755,61 +913,163 @@ pub fn recordings(ui: &mut egui::Ui, recordings: &Recordings) -> Option<PathBuf>
             if response.hovered() {
                 ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
             }
-            if response.clicked() {
+            // A click on the card opens it, unless a button took the click.
+            if response.clicked() && !pending {
                 open = Some(row.path.clone());
             }
             ui.add_space(4.0);
         }
     });
+    app.confirm_delete = confirm;
+    if let Some(path) = delete {
+        app.delete_recording(&path, ui.ctx());
+    }
     open
 }
 
 // ------------------------------------------------------------------ settings
 
-pub fn settings(ui: &mut egui::Ui, app: &App) {
+pub fn settings(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
+    let mut nav = None;
     ui.heading(format!("{}  Settings", icons::GEAR));
     ui.add_space(6.0);
-    let path = heatlog::config::config_path()
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    card(ui, |ui| {
-        ui.label("Settings are read from the config file at startup:");
-        ui.label(RichText::new(&path).monospace());
-        if ui
-            .button(format!("{}  Open folder", icons::FOLDER_OPEN))
-            .clicked()
-        {
-            if let Some(dir) = std::path::Path::new(&path).parent() {
-                let _ = std::process::Command::new("explorer").arg(dir).spawn();
-            }
-        }
-        ui.add_space(6.0);
-        if let Some(info) = &app.info {
-            let games = if info.games.is_empty() {
-                "none configured".to_string()
-            } else {
-                info.games.join(", ")
-            };
-            stat_grid(
-                ui,
-                "settings",
-                &[
-                    ("Games for auto-record", games),
-                    (
-                        "CPU temperature source",
-                        info.cpu_temp_source.unwrap_or("unavailable").to_string(),
-                    ),
-                ],
-            );
-            ui.add_space(4.0);
+
+    egui::ScrollArea::vertical().show(ui, |ui| {
+        card(ui, |ui| {
+            ui.label(RichText::new("Auto-record these games").strong());
             ui.label(
                 RichText::new(
                     "Find a game's process name in Task Manager (Details tab, Name column) \
-                     while it is running, add it to `games` in the config file, then restart \
-                     the app. In-app editing is coming in the next update.",
+                     while it is running.",
                 )
-                .weak(),
+                .weak()
+                .small(),
             );
-        }
+            let mut remove = None;
+            for (i, game) in app.settings.games.iter_mut().enumerate() {
+                ui.horizontal(|ui| {
+                    ui.text_edit_singleline(game);
+                    if ui.button(icons::TRASH).clicked() {
+                        remove = Some(i);
+                    }
+                });
+            }
+            if let Some(i) = remove {
+                app.settings.games.remove(i);
+            }
+            ui.horizontal(|ui| {
+                let hint = ui.add(
+                    egui::TextEdit::singleline(&mut app.settings.new_game)
+                        .hint_text("RainbowSix.exe"),
+                );
+                let submitted = hint.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                if (ui.button("Add").clicked() || submitted)
+                    && !app.settings.new_game.trim().is_empty()
+                {
+                    let name = app.settings.new_game.trim().to_string();
+                    app.settings.games.push(name);
+                    app.settings.new_game.clear();
+                }
+            });
+        });
+        ui.add_space(8.0);
+
+        card(ui, |ui| {
+            ui.label(RichText::new("Recording").strong());
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::DragValue::new(&mut app.settings.interval_secs)
+                        .range(1..=60)
+                        .suffix(" s"),
+                );
+                ui.label(RichText::new("between samples").weak());
+            });
+        });
+        ui.add_space(8.0);
+
+        card(ui, |ui| {
+            ui.label(RichText::new("Storage").strong());
+            let used = app.recordings_bytes();
+            ui.label(format!(
+                "{} recordings, {:.1} MB on disk",
+                app.recordings.rows.len(),
+                used as f64 / (1024.0 * 1024.0)
+            ));
+            ui.horizontal(|ui| {
+                let mut enabled = app.settings.delete_after_days > 0;
+                if ui
+                    .checkbox(&mut enabled, "Auto-delete old recordings")
+                    .changed()
+                {
+                    app.settings.delete_after_days = if enabled { 30 } else { 0 };
+                }
+                if enabled {
+                    ui.label(RichText::new("older than").weak());
+                    ui.add(
+                        egui::DragValue::new(&mut app.settings.delete_after_days)
+                            .range(1..=365)
+                            .suffix(" days"),
+                    );
+                }
+            });
+            ui.label(
+                RichText::new("Deleted recordings go to the Recycle Bin.")
+                    .weak()
+                    .small(),
+            );
+        });
+        ui.add_space(8.0);
+
+        card(ui, |ui| {
+            ui.label(RichText::new("Updates").strong());
+            ui.checkbox(
+                &mut app.settings.check_updates,
+                "Check GitHub for updates on start-up",
+            );
+            ui.checkbox(
+                &mut app.settings.include_prereleases,
+                "Include pre-releases (early versions, less tested)",
+            );
+            ui.label(
+                RichText::new(format!(
+                    "This version: {}. The check is the only internet request heatlog makes.",
+                    heatlog::update::current_version()
+                ))
+                .weak()
+                .small(),
+            );
+        });
+        ui.add_space(8.0);
+
+        card(ui, |ui| {
+            ui.label(RichText::new("CPU temperature").strong());
+            match app.info.as_ref().and_then(|i| i.cpu_temp_source) {
+                Some(source) => {
+                    ui.label(format!("Reading from {source}."));
+                }
+                None => {
+                    ui.label(RichText::new("No source found.").weak());
+                }
+            }
+            if ui.button("Open setup").clicked() {
+                nav = Some(crate::Page::TempSetup);
+            }
+        });
+        ui.add_space(10.0);
+
+        ui.horizontal(|ui| {
+            if ui.button(RichText::new("Save settings").strong()).clicked() {
+                app.save_settings();
+            }
+            if let Some(saved) = &app.settings.saved {
+                ui.label(RichText::new(saved).weak());
+            }
+        });
+        let path = heatlog::config::config_path()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        ui.add_space(4.0);
+        ui.label(RichText::new(format!("Stored in {path}")).weak().small());
     });
+    nav
 }

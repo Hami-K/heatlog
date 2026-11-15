@@ -90,7 +90,7 @@ fn headline(s: &Summary) -> String {
     }
     let _ = write!(
         out,
-        "<li>CPU peaked at {:.1} GHz and {:.0}% busy</li>",
+        "<li>CPU peaked at {:.1} GHz and {:.0}% usage</li>",
         s.cpu.max_core_mhz.peak / 1000.0,
         s.cpu.usage_pct.peak
     );

@@ -25,13 +25,13 @@ pub struct ChartView {
     phrase: fn(f64) -> String,
 }
 
-/// Plain-language hover text per chart, e.g. "CPU 10% busy".
+/// Plain-language hover text per chart, e.g. "CPU usage 10%".
 fn phrase_for(title: &str) -> fn(f64) -> String {
     match title {
         "GPU temperature" => |v| format!("GPU {v:.0} C"),
         "GPU speed" => |v| format!("GPU at {v:.2} GHz"),
         "GPU power" => |v| format!("GPU drawing {v:.0} W"),
-        "CPU usage" => |v| format!("CPU {v:.0}% busy"),
+        "CPU usage" => |v| format!("CPU usage {v:.0}%"),
         "CPU speed" => |v| format!("CPU at {v:.2} GHz"),
         "CPU temperature" => |v| format!("CPU {v:.0} C"),
         _ => |v| format!("{v:.1}"),
@@ -191,7 +191,7 @@ pub enum TimeFmt {
 }
 
 /// Snap the hover to the nearest data point: a marker on the point and a
-/// plain-language tooltip like "0:04 · CPU 10% busy" instead of raw cursor
+/// plain-language tooltip like "0:04 - CPU usage 10%" instead of raw cursor
 /// coordinates.
 pub fn hover_nearest(
     plot_ui: &mut egui_plot::PlotUi,
