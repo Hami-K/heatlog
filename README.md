@@ -24,7 +24,12 @@ installer is not code-signed (a certificate costs money this project does not
 have). Choose "More info" then "Run anyway" if you are happy to.
 
 The release also has **heatlog-gui.exe** (the app) and **heatlog.exe** (the
-command line tool) as portable downloads that run without installing.
+command line tool) as portable downloads that run without installing, and
+**SHA256SUMS.txt** to check any of them against:
+
+```
+(Get-FileHash .\heatlog-setup.exe -Algorithm SHA256).Hash
+```
 
 ## Desktop app
 
@@ -125,7 +130,11 @@ A one-hour session is roughly 2 MB.
 ## Updates
 
 On start-up the app asks GitHub whether a newer release exists, and offers a
-one-click update that downloads and runs the installer. That request is the
+one-click update that downloads the installer, checks it against the
+SHA-256 published in that release and only then runs it. A download that
+does not match its checksum, or that is not listed at all, is refused with
+an explanation rather than run, and downloads only ever come from this
+project's own release URLs over HTTPS. That request is the
 only time heatlog contacts the internet, it sends nothing but the request
 itself, and it never updates while a recording is running. Turn it off with
 the "Check GitHub for updates on start-up" checkbox in Settings, or
