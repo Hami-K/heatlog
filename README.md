@@ -2,39 +2,48 @@
 
 [![CI](https://github.com/Hami-K/heatlog/actions/workflows/ci.yml/badge.svg)](https://github.com/Hami-K/heatlog/actions/workflows/ci.yml)
 
-A Windows command-line tool that records hardware stats while you game and
-summarises them afterwards: peak temperatures and clocks, how long the GPU
-throttled and why, and when the worst moments happened.
+A Windows app that records what your hardware is doing while you game, then
+tells you in plain language whether it throttled, when, and why. It watches
+GPU temperature, clocks, power and the driver's own throttle reasons, plus
+CPU usage, clocks and memory.
 
 Monitoring is read-only. heatlog talks to hardware sensors and the process
-list only — it never touches game processes, injects code, or draws overlays,
+list only: it never touches game processes, injects code, or draws overlays,
 and it does not need administrator rights.
 
-## Requirements
+## Download
 
-- Windows 10/11
-- Rust toolchain (MSVC) to build
-- NVIDIA GPU — optional; without one, CPU and RAM are still recorded
-- [LibreHardwareMonitor](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor)
-  with its "Remote Web Server" enabled — optional, for CPU temperature.
-  Without it heatlog tries the ACPI thermal zone, and otherwise marks CPU
-  temperature as unavailable.
+Get **heatlog-setup.exe** from the
+[latest release](https://github.com/Hami-K/heatlog/releases/latest) and run
+it. It installs for your user account only (under `%LOCALAPPDATA%\Programs`),
+adds a Start menu shortcut, and registers an uninstaller in Windows
+"Installed apps". No admin prompt.
 
-## Install
+Windows SmartScreen may warn that the publisher is unknown, because the
+installer is not code-signed (a certificate costs money this project does not
+have). Choose "More info" then "Run anyway" if you are happy to.
 
-Download `heatlog.exe` from the
-[latest release](https://github.com/Hami-K/heatlog/releases) and run it from a
-terminal, or build from source:
+The release also has **heatlog-gui.exe** (the app) and **heatlog.exe** (the
+command line tool) as portable downloads that run without installing.
 
-```
-git clone https://github.com/Hami-K/heatlog
-cd heatlog
-cargo build --release
-```
+## Desktop app
 
-The binary is `target\release\heatlog.exe`.
+The app is laid out like a modern Windows system tool, with a warm "heat"
+theme: temperature visuals run a cool-blue to amber to rust-red scale, so
+colour itself shows how hot things are.
 
-## Usage
+- Live monitoring of CPU, GPU and memory: 60-second graphs, stat grids, and a
+  sidebar with mini graphs and current values, updating every second
+- An Overview dashboard with heat-coloured gauges and a plain-language health
+  status ("Running cool", "Getting warm", "Too hot - slowing down")
+- One-click recording with a running timer, plus auto-record that starts when
+  a configured game launches and stops when it exits (Ctrl+R also toggles)
+- A Recordings page listing past sessions with verdict pills, peak
+  temperatures and a sparkline preview; opening one shows the verdict,
+  charts with point-snapping tooltips, technical details, and an
+  Export HTML button
+
+## Command line
 
 ```
 heatlog snapshot          # read all sensors once and print them
@@ -45,26 +54,11 @@ heatlog list              # show recorded sessions
 heatlog report            # summarise the most recent session
 heatlog report 2026-11-14_23-34-05          # summarise a specific one
 heatlog report --html --open                # HTML report with charts
+heatlog update            # check GitHub for a newer version
 ```
 
-While recording, heatlog shows a live dashboard with current values and
-sparkline history for GPU temperature, GPU utilisation, CPU usage and the
-fastest core's clock, plus a throttle indicator. `--no-tui` (or piping the
-output) switches to plain line-by-line status instead.
-
-Example report:
-
-```
-Session 2026-11-14 23:34:05
-Duration 0:20  (20 samples @ 1s)
-
-GPU  NVIDIA GeForce RTX 4060 Laptop GPU
-  Temperature  avg 74 C, peak 84 C at 0:12
-  Core clock   avg 2370 MHz, peak 2550 MHz at 0:03
-  Throttling
-    thermal limit (software): 2 episode(s), 0:07 total, longest at 0:10
-...
-```
+While recording, the command line tool shows a live dashboard with sparkline
+history. `--no-tui` (or piping the output) switches to plain status lines.
 
 `report --html` writes a single self-contained HTML file next to the session
 (everything is inline; nothing is fetched from the internet). It opens with a
@@ -73,78 +67,125 @@ avoid overheating, mostly around minute 33"), headline numbers in friendly
 units, then time charts with hover tooltips for GPU temperature, speed and
 power, and CPU usage, speed and temperature. Shaded regions mark GPU
 throttling (driver-reported) and estimated CPU slowdowns, temperature charts
-show the hot zone, and the full technical numbers (peaks, timestamps,
-per-reason breakdown) sit in a collapsible section. Long sessions are
-downsampled for display in a way that preserves spikes. `--open` launches the
-file in the default browser.
+show the hot zone, and the full technical numbers sit in a collapsible
+section. Long sessions are downsampled in a way that preserves spikes.
 
-<!-- SCREENSHOTS: add terminal screenshots here -->
+<!-- SCREENSHOTS: add app and report screenshots here -->
 
-## Desktop app
+## CPU temperature
 
-`heatlog-gui` is a desktop app laid out like a modern Windows system tool,
-with a warm "heat" theme: temperature-related visuals run a cool-blue to
-amber to rust-red scale, so colour itself shows how hot things are.
+Windows has no unprivileged API for CPU temperature, so heatlog borrows the
+reading from a monitoring app that already ships a signed driver. It looks
+for these in order, and keeps working without either:
 
-- live monitoring of CPU, GPU and memory (60-second graphs, stats, and a
-  sidebar with mini graphs and current values), updating every second
-- an Overview dashboard with round heat-coloured gauges and a plain-language
-  health status ("Running cool" / "Getting warm" / "Too hot — slowing down",
-  or a neutral note when no temperature source exists)
-- one-click recording with a running timer, plus auto-record that starts
-  when a configured game launches and stops when it exits
-- a Recordings page listing past sessions with verdict pills and peak
-  temperatures; opening one shows the verdict, charts with point-snapping
-  tooltips and throttle shading, technical details, and an Export HTML button
+1. **HWiNFO** (recommended) through its shared-memory interface. Install it
+   with `winget install --id REALiX.HWiNFO -e`, start it in sensors-only
+   mode, tick **Shared Memory Support** in its settings, and leave it
+   running. The free version switches that option off again after 12 hours;
+   heatlog says so when it happens.
+2. **LibreHardwareMonitor** through its web server
+   (`winget install LibreHardwareMonitor.LibreHardwareMonitor`, then enable
+   Options > Remote Web Server).
 
-Build and run it from source:
+The app's Settings page has an **Open setup** button that detects which of
+these is running, installs HWiNFO for you through winget, and re-checks.
+heatlog never changes another app's settings for you.
 
-```
-cargo run --release --bin heatlog-gui
-```
-
-Settings (the game list for auto-record, the recording interval) are read
-from the config file described below; in-app editing is planned.
+GPU temperature needs none of this: NVIDIA's own management library reports
+it directly.
 
 ## Configuration
 
-`heatlog record` creates `%APPDATA%\heatlog\config.toml` on first run, with
-comments explaining each option:
+Settings live in `%APPDATA%\heatlog\config.toml`, created on first run, and
+can be edited from the app's Settings page:
 
-- `interval_secs` — seconds between samples (default 1)
-- `sessions_dir` — where sessions are stored; defaults to
+- `interval_secs` - seconds between samples (default 1)
+- `sessions_dir` - where sessions are stored; defaults to
   `%APPDATA%\heatlog\sessions`
-- `games` — process names for `--auto` (find the exact name in Task
+- `games` - process names for auto-record (find the exact name in Task
   Manager's Details tab while the game is running)
-- `lhm_url` — LibreHardwareMonitor web server endpoint for CPU temperature
+- `lhm_url` - LibreHardwareMonitor web server endpoint
+- `check_updates`, `include_prereleases` - update checking (see below)
+- `delete_after_days` - delete recordings older than this on start-up; 0
+  keeps them forever
 
 Sessions are JSON Lines files (`.jsonl`), one metadata line followed by one
 JSON object per sample, so a crash or kill loses at most the last sample.
 
+## Recordings and disk space
+
+The Settings page shows how many recordings there are and how much disk space
+they use. Recordings can be deleted one at a time or all at once, both behind
+a confirmation, and optionally pruned automatically after a number of days.
+Deleted recordings (and any HTML report exported beside them) go to the
+Recycle Bin; if Windows refuses, heatlog deletes them outright instead.
+
+A one-hour session is roughly 2 MB.
+
+## Updates
+
+On start-up the app asks GitHub whether a newer release exists, and offers a
+one-click update that downloads and runs the installer. That request is the
+only time heatlog contacts the internet, it sends nothing but the request
+itself, and it never updates while a recording is running. Turn it off with
+the "Check GitHub for updates on start-up" checkbox in Settings, or
+`check_updates = false` in the config file. Pre-releases are ignored unless
+you opt in.
+
 ## Overhead
 
-Measured while recording at 1-second intervals (release build, Intel Core
-i9-13900H, Windows 11): about 0.14% of one CPU core and 20 MB of memory for
-heatlog itself, with no measurable CPU increase in the WMI provider process
-(WmiPrvSE) that serves the performance-counter queries.
+Measured while monitoring at one sample per second (release build, Intel Core
+i9-13900H, Windows 11):
+
+| | CPU | Memory |
+|---|---|---|
+| `heatlog record` (command line) | 0.14% of one core | 20 MB |
+| app in the background, which is where it sits while you game | 2.0% of one core | 145 MB |
+| app in the foreground with the window visible | 3.4% of one core | 145 MB |
+
+The app draws once a second, when a new sample arrives. It only redraws
+faster while the window has focus (to let numbers glide), and not at all
+while it is minimised. Resting the mouse pointer on a chart costs more
+again, because the value tooltip follows the pointer.
+
+The WMI provider process that serves the performance-counter queries
+(WmiPrvSE) showed no measurable CPU increase.
 
 ## How it works
 
-- **GPU** — queried through NVML (the library behind `nvidia-smi`):
+- **GPU** - queried through NVML (the library behind `nvidia-smi`):
   temperature, core/memory clocks, utilisation, power draw, VRAM, and the
   driver's own throttle reasons (thermal limit, power cap, ...).
-- **CPU clocks** — Windows' "Processor Information" performance counters,
-  per core: percent-of-base-clock times each core's base frequency, the same
+- **CPU clocks** - Windows' "Processor Information" performance counters, per
+  core: percent-of-base-clock times each core's base frequency, the same
   calculation Task Manager shows. CPU usage and RAM come from the same
   counters via the `sysinfo` crate.
-- **CPU temperature** — Windows has no reliable unprivileged API, so heatlog
-  probes LibreHardwareMonitor's local web server, falls back to the ACPI
-  thermal zone, and degrades to "unavailable" rather than failing.
-- **Reports** — `report` computes averages, peaks with timestamps, and groups
-  consecutive throttled samples into episodes per reason. CPU throttling is a
-  clearly-labelled heuristic (sustained high load with clocks well below the
-  session's own loaded baseline), because Windows exposes no direct signal.
+- **CPU temperature** - read from HWiNFO's shared memory or
+  LibreHardwareMonitor's web server, as described above, and degraded to
+  "unavailable" rather than guessed.
+- **Reports** - averages, peaks with timestamps, and consecutive throttled
+  samples grouped into episodes per reason. CPU throttling is a clearly
+  labelled estimate (sustained high load with clocks well below the session's
+  own loaded baseline), because Windows exposes no direct signal.
+
+## Build from source
+
+Requires the Rust toolchain (MSVC) and Windows 10/11:
+
+```
+git clone https://github.com/Hami-K/heatlog
+cd heatlog
+cargo build --release
+```
+
+The binaries are `target\release\heatlog-gui.exe` and
+`target\release\heatlog.exe`. Building the installer additionally needs
+[Inno Setup 6](https://jrsoftware.org/isinfo.php):
+
+```
+ISCC.exe /DAppVersion=0.2.0 installer\heatlog.iss
+```
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT - see [LICENSE](LICENSE).
