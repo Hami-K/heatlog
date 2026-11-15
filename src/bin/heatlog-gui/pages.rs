@@ -383,10 +383,7 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
                     icons::RECORD,
                     fmt_time(rec.started.elapsed().as_secs())
                 ),
-                None => app
-                    .status
-                    .clone()
-                    .unwrap_or_else(|| "not recording".to_string()),
+                None => app.status_text().unwrap_or("not recording").to_string(),
             };
             let status_color = if app.recording.is_some() {
                 RED
@@ -717,12 +714,8 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
                     .clicked()
                 {
                     match start_lhm(&path) {
-                        Ok(()) => {
-                            app.status = Some(
-                                "Starting LibreHardwareMonitor - accept the admin prompt."
-                                    .to_string(),
-                            )
-                        }
+                        Ok(()) => app
+                            .set_status("Starting LibreHardwareMonitor - accept the admin prompt."),
                         Err(e) => app.error = Some(e),
                     }
                 }
@@ -764,9 +757,9 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
             .clicked()
         {
             app.send(worker::Cmd::Reprobe);
-            app.status = Some("Looking for a temperature source...".to_string());
+            app.set_status("Looking for a temperature source...");
         }
-        if let Some(status) = &app.status {
+        if let Some(status) = app.status_text() {
             ui.label(RichText::new(status).weak());
         }
     });

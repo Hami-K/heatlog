@@ -143,6 +143,16 @@ fn run(ctx: egui::Context, cmds: Receiver<Cmd>, events: Sender<Event>) {
             }
         }
 
+        // Someone starting HWiNFO or LibreHardwareMonitor should not have
+        // to come back and press a button: look again now and then until a
+        // source turns up.
+        if sensors.cpu_temp_source().is_none() && tick.is_multiple_of(15) {
+            sensors.reprobe_temp(&cfg.lhm_url);
+            if sensors.cpu_temp_source().is_some() {
+                send(info(&sensors, &cfg));
+            }
+        }
+
         let sample = sensors.read_sample();
         match sample.cpu_temp_c {
             Some(_) => temp_worked = true,

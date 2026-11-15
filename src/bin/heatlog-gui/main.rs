@@ -151,6 +151,29 @@ fn push(series: &mut VecDeque<f64>, value: f64) {
     }
 }
 
+/// A short-lived line of feedback. Status text describes something that
+/// just happened, so it expires rather than sitting on screen claiming a
+/// state the app has long since left.
+pub struct Status {
+    text: String,
+    at: Instant,
+}
+
+impl Status {
+    const TTL: Duration = Duration::from_secs(12);
+
+    fn new(text: String) -> Self {
+        Self {
+            text,
+            at: Instant::now(),
+        }
+    }
+
+    fn get(&self, now: Instant) -> Option<&str> {
+        (now.duration_since(self.at) < Self::TTL).then_some(self.text.as_str())
+    }
+}
+
 pub struct RecordingUi {
     pub started: Instant,
     pub samples: u64,
@@ -197,7 +220,7 @@ pub struct App {
     pub page: Page,
     pub recording: Option<RecordingUi>,
     pub auto: bool,
-    pub status: Option<String>,
+    pub status: Option<Status>,
     pub error: Option<String>,
     /// Something the user may want to act on, but not a failure.
     pub hint: Option<String>,
@@ -240,7 +263,7 @@ impl App {
             installing: false,
             install_error: None,
             install_rx: None,
-            status: (pruned > 0).then(|| format!("Deleted {pruned} old recording(s)")),
+            status: (pruned > 0).then(|| Status::new(format!("Deleted {pruned} old recording(s)"))),
             info: None,
             latest: None,
             prev: None,
@@ -271,6 +294,15 @@ impl App {
         std::thread::spawn(move || {
             let _ = tx.send(pages::install_hwinfo());
         });
+    }
+
+    pub fn set_status(&mut self, text: &str) {
+        self.status = Some(Status::new(text.to_string()));
+    }
+
+    /// The status line, or nothing once it has had its say.
+    pub fn status_text(&self) -> Option<&str> {
+        self.status.as_ref().and_then(|s| s.get(Instant::now()))
     }
 
     pub fn send(&self, cmd: worker::Cmd) {
@@ -316,7 +348,7 @@ impl App {
         match &available.installer {
             Some(_) => match heatlog::update::run_installer(available) {
                 Ok(_) => {
-                    self.status = Some("Installer started - heatlog will close".to_string());
+                    self.set_status("Installer started - heatlog will close");
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 Err(e) => self.error = Some(format!("update failed: {e:#}")),
@@ -335,7 +367,7 @@ impl App {
         self.confirm_delete = None;
         match heatlog::session::delete(path) {
             Ok(()) => {
-                self.status = Some("Recording deleted".to_string());
+                self.set_status("Recording deleted");
                 self.recordings = pages::Recordings::load(ctx);
             }
             Err(e) => self.error = Some(format!("could not delete: {e:#}")),
@@ -357,7 +389,7 @@ impl App {
                 break;
             }
         }
-        self.status = Some(format!("Deleted {total} recording(s)"));
+        self.set_status(&format!("Deleted {total} recording(s)"));
         self.recordings = pages::Recordings::load(ctx);
     }
 
@@ -404,7 +436,7 @@ impl App {
                 }
                 worker::Event::RecordingStopped { path, samples } => {
                     self.recording = None;
-                    self.status = Some(format!(
+                    self.set_status(&format!(
                         "Saved {samples} samples to {}",
                         path.file_name().unwrap_or_default().to_string_lossy()
                     ));
@@ -459,9 +491,8 @@ impl eframe::App for App {
                 match result {
                     Ok(()) => {
                         self.install_error = None;
-                        self.status = Some(
-                            "HWiNFO installed - start it, tick Shared Memory Support, then                              use Check again."
-                                .to_string(),
+                        self.set_status(
+                            "HWiNFO installed - start it and tick Shared Memory Support.",
                         );
                         self.send(worker::Cmd::Reprobe);
                     }
@@ -670,7 +701,7 @@ impl App {
                         );
                     }
 
-                    if let Some(status) = &self.status {
+                    if let Some(status) = self.status_text() {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             ui.label(RichText::new(status).weak());
                         });
@@ -903,4 +934,22 @@ pub fn card<R>(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
             add(ui)
         })
         .inner
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Status;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_status_line_stops_claiming_a_state_the_app_has_left() {
+        let status = Status::new("Starting LibreHardwareMonitor...".to_string());
+        let now = Instant::now();
+        assert_eq!(status.get(now), Some("Starting LibreHardwareMonitor..."));
+        assert_eq!(
+            status.get(now + Duration::from_secs(5)),
+            Some("Starting LibreHardwareMonitor...")
+        );
+        assert_eq!(status.get(now + Duration::from_secs(30)), None);
+    }
 }
