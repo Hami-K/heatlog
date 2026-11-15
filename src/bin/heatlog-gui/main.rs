@@ -188,6 +188,7 @@ pub struct SettingsDraft {
     pub check_updates: bool,
     pub include_prereleases: bool,
     pub delete_after_days: u64,
+    pub record_processes: bool,
     pub saved: Option<String>,
 }
 
@@ -200,6 +201,7 @@ impl SettingsDraft {
             check_updates: cfg.check_updates,
             include_prereleases: cfg.include_prereleases,
             delete_after_days: cfg.delete_after_days,
+            record_processes: cfg.record_processes,
             saved: None,
         }
     }
@@ -329,6 +331,7 @@ impl App {
         cfg.check_updates = self.settings.check_updates;
         cfg.include_prereleases = self.settings.include_prereleases;
         cfg.delete_after_days = self.settings.delete_after_days;
+        cfg.record_processes = self.settings.record_processes;
         match heatlog::config::save(&cfg) {
             Ok(()) => {
                 self.settings.saved = Some("Saved".to_string());

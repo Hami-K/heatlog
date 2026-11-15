@@ -101,6 +101,9 @@ pub fn cpu(ui: &mut egui::Ui, app: &App) {
             ),
         ));
         stats.push(("Logical processors", s.cpu.per_core_mhz.len().to_string()));
+        if let Some(rpm) = s.fastest_fan() {
+            stats.push(("Fan speed", format!("{rpm} rpm")));
+        }
         match s.cpu_temp_c {
             Some(t) => stats.push(("Temperature", format!("{t:.0} °C"))),
             None => stats.push(("Temperature", "unavailable - see Settings".to_string())),
@@ -600,7 +603,82 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
     ui.add_space(10.0);
 
     card(ui, |ui| {
-        ui.label(RichText::new("HWiNFO (recommended)").strong().size(15.0));
+        ui.label(
+            RichText::new("LibreHardwareMonitor (recommended)")
+                .strong()
+                .size(15.0),
+        );
+        if lhm_web {
+            ui.label(
+                RichText::new(format!("{}  Web server reachable.", icons::CHECK)).color(GREEN),
+            );
+        } else if lhm_running {
+            ui.label(
+                RichText::new(format!(
+                    "{}  Running, but its web server is off.",
+                    icons::WARNING
+                ))
+                .color(AMBER),
+            );
+        } else {
+            ui.label(RichText::new("Not running.").weak());
+        }
+        ui.add_space(4.0);
+        match lhm_path.as_ref() {
+            Some(path) => {
+                ui.label(
+                    RichText::new(
+                        "Windows will ask for admin permission, because LibreHardwareMonitor \
+                         needs it to read sensors.",
+                    )
+                    .weak()
+                    .small(),
+                );
+                let path = path.clone();
+                if ui
+                    .button(format!("{}  Start LibreHardwareMonitor", icons::PLAY))
+                    .clicked()
+                {
+                    match start_lhm(&path) {
+                        Ok(()) => app
+                            .set_status("Starting LibreHardwareMonitor - accept the admin prompt."),
+                        Err(e) => app.error = Some(e),
+                    }
+                }
+                ui.add_space(4.0);
+                ui.label("Then, once it is open:");
+                ui.label("1.  Options > Remote Web Server > Run, and leave it running.");
+                ui.label(
+                    RichText::new(
+                        "Windows Firewall may ask about network access. Blocking it is fine: \
+                         heatlog only reads from this PC.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            }
+            _ => {
+                ui.label("Not installed, or heatlog could not find it. To install it:");
+                ui.label(
+                    RichText::new("winget install LibreHardwareMonitor.LibreHardwareMonitor")
+                        .monospace(),
+                );
+                ui.label(
+                    RichText::new(
+                        "That package is portable: it adds no Start menu entry, and it has to \
+                         be run as administrator. Use Check again afterwards and heatlog will \
+                         offer to start it for you.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            }
+        }
+    });
+    ui.add_space(10.0);
+
+    card(ui, |ui| {
+        ui.label(RichText::new("HWiNFO (alternative)").strong().size(15.0));
         if hwinfo_sharing {
             ui.label(
                 RichText::new(format!("{}  Running and sharing sensors.", icons::CHECK))
@@ -673,81 +751,6 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
             .weak()
             .small(),
         );
-    });
-    ui.add_space(10.0);
-
-    card(ui, |ui| {
-        ui.label(
-            RichText::new("LibreHardwareMonitor (alternative)")
-                .strong()
-                .size(15.0),
-        );
-        if lhm_web {
-            ui.label(
-                RichText::new(format!("{}  Web server reachable.", icons::CHECK)).color(GREEN),
-            );
-        } else if lhm_running {
-            ui.label(
-                RichText::new(format!(
-                    "{}  Running, but its web server is off.",
-                    icons::WARNING
-                ))
-                .color(AMBER),
-            );
-        } else {
-            ui.label(RichText::new("Not running.").weak());
-        }
-        ui.add_space(4.0);
-        match lhm_path.as_ref() {
-            Some(path) => {
-                ui.label(
-                    RichText::new(
-                        "Windows will ask for admin permission, because LibreHardwareMonitor \
-                         needs it to read sensors.",
-                    )
-                    .weak()
-                    .small(),
-                );
-                let path = path.clone();
-                if ui
-                    .button(format!("{}  Start LibreHardwareMonitor", icons::PLAY))
-                    .clicked()
-                {
-                    match start_lhm(&path) {
-                        Ok(()) => app
-                            .set_status("Starting LibreHardwareMonitor - accept the admin prompt."),
-                        Err(e) => app.error = Some(e),
-                    }
-                }
-                ui.add_space(4.0);
-                ui.label("Then, once it is open:");
-                ui.label("1.  Options > Remote Web Server > Run, and leave it running.");
-                ui.label(
-                    RichText::new(
-                        "Windows Firewall may ask about network access. Blocking it is fine: \
-                         heatlog only reads from this PC.",
-                    )
-                    .weak()
-                    .small(),
-                );
-            }
-            _ => {
-                ui.label("Not installed, or heatlog could not find it. To install it:");
-                ui.label(
-                    RichText::new("winget install LibreHardwareMonitor.LibreHardwareMonitor")
-                        .monospace(),
-                );
-                ui.label(
-                    RichText::new(
-                        "That package is portable: it adds no Start menu entry, and it has to \
-                         be run as administrator. Use Check again afterwards and heatlog will \
-                         offer to start it for you.",
-                    )
-                    .weak()
-                    .small(),
-                );
-            }
-        }
     });
     ui.add_space(10.0);
 
@@ -1198,6 +1201,22 @@ pub fn settings(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
                 RichText::new("Deleted recordings go to the Recycle Bin.")
                     .weak()
                     .small(),
+            );
+        });
+        ui.add_space(8.0);
+
+        card(ui, |ui| {
+            ui.label(RichText::new("Slowdown causes").strong());
+            ui.checkbox(
+                &mut app.settings.record_processes,
+                "Record which programs were busy",
+            );
+            ui.label(
+                RichText::new(
+                    "Lets reports suggest what caused a slowdown, for example a browser                      using the processor while a game stuttered. Program names are written                      into the recording files on this PC and sent nowhere. Turn this off to                      record hardware readings only.",
+                )
+                .weak()
+                .small(),
             );
         });
         ui.add_space(8.0);

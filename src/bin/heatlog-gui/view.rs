@@ -44,6 +44,7 @@ pub struct Loaded {
     summary: Summary,
     verdict_class: &'static str,
     verdict_text: String,
+    causes: Vec<report::causes::Cause>,
     charts: Vec<ChartView>,
     export_status: Option<String>,
 }
@@ -76,12 +77,14 @@ pub fn load_session(path: &Path) -> anyhow::Result<Loaded> {
             }
         })
         .collect();
+    let causes = report::causes::causes(&session, &summary);
     Ok(Loaded {
         path: path.to_path_buf(),
         session,
         summary,
         verdict_class,
         verdict_text,
+        causes,
         charts,
         export_status: None,
     })
@@ -127,6 +130,23 @@ pub fn session_view(ui: &mut egui::Ui, loaded: &mut Loaded) -> bool {
             ui.label(RichText::new(&loaded.verdict_text).size(14.0));
         });
     ui.add_space(6.0);
+
+    if !loaded.causes.is_empty() {
+        ui.add_space(8.0);
+        ui.label(RichText::new("Possible causes").strong().size(15.0));
+        ui.label(
+            RichText::new("Read off the recording, so these are suggestions, not certainties.")
+                .weak()
+                .small(),
+        );
+        for cause in &loaded.causes {
+            card(ui, |ui| {
+                ui.label(RichText::new(&cause.headline).strong());
+                ui.label(RichText::new(&cause.detail).weak());
+            });
+            ui.add_space(4.0);
+        }
+    }
 
     {
         for chart in &loaded.charts {
@@ -325,6 +345,25 @@ fn technical_ui(ui: &mut egui::Ui, s: &Summary) {
                     plain(ui, "Temperature", temp, "°C");
                 }
             });
+            if let Some(fan) = &s.fan_rpm {
+                ui.add_space(8.0);
+                ui.label(RichText::new("Fans").strong());
+                egui::Grid::new("fan-tech").striped(true).show(ui, |ui| {
+                    plain(ui, "Speed", fan, "rpm");
+                });
+                let note = match s.cooling {
+                    report::Cooling::AtLimit => {
+                        "Fans were at full speed while the GPU throttled: cooling limit reached."
+                    }
+                    report::Cooling::FansHeldBack => {
+                        "The GPU throttled while the fans still had room to spin faster."
+                    }
+                    report::Cooling::Unknown => "",
+                };
+                if !note.is_empty() {
+                    ui.label(RichText::new(note).weak());
+                }
+            }
             if let Some(t) = &s.cpu.throttle {
                 ui.label(format!(
                     "Estimated clock drops under load: {} episode(s), {} total \
