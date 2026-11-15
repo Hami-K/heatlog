@@ -12,7 +12,7 @@ use heatlog::report::{self, fmt_time};
 use heatlog::session;
 
 use crate::view::{hover_nearest, TimeFmt};
-use crate::{card, heat_color, temp_frac, App, ACCENT, AMBER, GREEN, RED};
+use crate::{card, heat_color, temp_frac, usage_color, App, ACCENT, AMBER, GREEN, RED};
 
 // ---------------------------------------------------------------- live pages
 
@@ -239,122 +239,241 @@ fn gauge(ui: &mut egui::Ui, id: &str, frac: f32, color: Color32, center: String,
 
 // ------------------------------------------------------------------ overview
 
-pub fn overview(ui: &mut egui::Ui, app: &App) {
+/// Returns a page to navigate to, if a button asked for one.
+pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
+    let mut nav = None;
     ui.heading(format!("{}  Overview", icons::GAUGE));
     ui.add_space(6.0);
 
     let (color, icon, word, detail) = health(app);
+    let temps_unavailable = word == "Temperatures unavailable";
     card(ui, |ui| {
         ui.horizontal(|ui| {
             ui.label(RichText::new(icon).size(22.0).color(color));
             ui.label(RichText::new(word).strong().size(17.0));
             ui.label(RichText::new(detail).weak());
+            if temps_unavailable {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("Set up CPU temperature").clicked() {
+                        nav = Some(crate::Page::TempSetup);
+                    }
+                });
+            }
         });
     });
     ui.add_space(10.0);
 
-    // Gauge row: whatever this machine can actually measure.
+    // Full-width gauge row: one evenly-spaced column per measurable thing.
+    // Usage gauges run amber-to-rust; temperature gauges use the heat scale.
     card(ui, |ui| {
-        ui.horizontal(|ui| {
-            if let Some(s) = &app.latest {
-                let cpu_frac = s.cpu.usage_pct / 100.0;
-                gauge(
-                    ui,
-                    "cpu-busy",
-                    cpu_frac,
-                    heat_color(cpu_frac),
-                    format!(
-                        "{:.0}%",
-                        f64::from(animated(ui, "cpu-busy-n", s.cpu.usage_pct))
-                    ),
-                    "CPU busy",
-                );
-                if let Some(t) = s.cpu_temp_c {
-                    gauge(
-                        ui,
-                        "cpu-temp",
-                        temp_frac(f64::from(t)),
-                        heat_color(temp_frac(f64::from(t))),
-                        format!("{:.0} C", animated(ui, "cpu-temp-n", t)),
-                        "CPU temp",
-                    );
-                }
-                if let Some(g) = &s.gpu {
-                    let util = g.util_pct as f32 / 100.0;
-                    gauge(
-                        ui,
-                        "gpu-busy",
-                        util,
-                        heat_color(util),
-                        format!("{:.0}%", animated(ui, "gpu-busy-n", g.util_pct as f32)),
-                        "GPU busy",
-                    );
-                    gauge(
-                        ui,
-                        "gpu-temp",
-                        temp_frac(f64::from(g.temp_c)),
-                        heat_color(temp_frac(f64::from(g.temp_c))),
-                        format!("{:.0} C", animated(ui, "gpu-temp-n", g.temp_c as f32)),
-                        "GPU temp",
-                    );
-                }
-            } else {
-                ui.label(RichText::new("starting sensors...").weak());
+        if let Some(s) = &app.latest {
+            struct G {
+                id: &'static str,
+                frac: f32,
+                color: Color32,
+                center: String,
+                label: &'static str,
             }
-        });
+            let mut gauges = vec![G {
+                id: "cpu-busy",
+                frac: s.cpu.usage_pct / 100.0,
+                color: usage_color(s.cpu.usage_pct / 100.0),
+                center: format!("{:.0}%", animated(ui, "cpu-busy-n", s.cpu.usage_pct)),
+                label: "CPU busy",
+            }];
+            let total_gb = app.info.as_ref().map(|i| i.ram_total_mib).unwrap_or(0) as f32 / 1024.0;
+            if total_gb > 0.0 {
+                let used_gb = s.ram_used_mib as f32 / 1024.0;
+                gauges.push(G {
+                    id: "mem",
+                    frac: used_gb / total_gb,
+                    color: usage_color(used_gb / total_gb),
+                    center: format!("{:.1} GB", animated(ui, "mem-n", used_gb)),
+                    label: "Memory",
+                });
+            }
+            if let Some(g) = &s.gpu {
+                let util = g.util_pct as f32 / 100.0;
+                gauges.push(G {
+                    id: "gpu-busy",
+                    frac: util,
+                    color: usage_color(util),
+                    center: format!("{:.0}%", animated(ui, "gpu-busy-n", g.util_pct as f32)),
+                    label: "GPU busy",
+                });
+                gauges.push(G {
+                    id: "gpu-temp",
+                    frac: temp_frac(f64::from(g.temp_c)),
+                    color: heat_color(temp_frac(f64::from(g.temp_c))),
+                    center: format!("{:.0} C", animated(ui, "gpu-temp-n", g.temp_c as f32)),
+                    label: "GPU temp",
+                });
+            }
+            if let Some(t) = s.cpu_temp_c {
+                gauges.push(G {
+                    id: "cpu-temp",
+                    frac: temp_frac(f64::from(t)),
+                    color: heat_color(temp_frac(f64::from(t))),
+                    center: format!("{:.0} C", animated(ui, "cpu-temp-n", t)),
+                    label: "CPU temp",
+                });
+            }
+            ui.columns(gauges.len(), |cols| {
+                for (col, g) in cols.iter_mut().zip(&gauges) {
+                    col.with_layout(egui::Layout::top_down(egui::Align::Center), |ui| {
+                        gauge(ui, g.id, g.frac, g.color, g.center.clone(), g.label);
+                    });
+                }
+            });
+        } else {
+            ui.label(RichText::new("starting sensors...").weak());
+        }
     });
     ui.add_space(10.0);
 
     ui.columns(2, |cols| {
         card(&mut cols[0], |ui| {
-            ui.label(RichText::new(format!("{}  Memory", icons::MEMORY)).weak());
-            let total = app.info.as_ref().map(|i| i.ram_total_mib).unwrap_or(0) as f64 / 1024.0;
-            match &app.latest {
-                Some(s) => {
-                    let used = s.ram_used_mib as f64 / 1024.0;
-                    let pct = if total > 0.0 {
-                        format!(" ({:.0}%)", 100.0 * used / total)
-                    } else {
-                        String::new()
-                    };
-                    ui.label(
-                        RichText::new(format!("{used:.1} / {total:.1} GB{pct}"))
-                            .strong()
-                            .size(20.0),
-                    );
+            ui.label(RichText::new("Activity — last 60 seconds").weak());
+            activity_chart(ui, app);
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("—").color(ACCENT).strong());
+                ui.label(RichText::new("CPU busy").weak().small());
+                if !app.hist.gpu_util_pct.is_empty() {
+                    ui.label(RichText::new("—").color(AMBER).strong());
+                    ui.label(RichText::new("GPU busy").weak().small());
                 }
-                None => {
-                    ui.label(RichText::new("...").size(20.0).weak());
-                }
-            }
+            });
         });
         card(&mut cols[1], |ui| {
-            ui.label(RichText::new(format!("{}  Recording", icons::RECORD)).weak());
-            match &app.recording {
-                Some(rec) => {
-                    ui.label(
-                        RichText::new(format!(
-                            "{}  {}",
-                            icons::RECORD,
-                            fmt_time(rec.started.elapsed().as_secs())
-                        ))
-                        .strong()
-                        .size(20.0)
-                        .color(RED),
-                    );
-                    if let Some(game) = &rec.game {
-                        ui.label(game);
+            ui.label(RichText::new(format!("{}  Latest recording", icons::FILM_STRIP)).weak());
+            match app.recordings.rows.first() {
+                Some(row) => {
+                    ui.label(RichText::new(&row.started).strong().size(16.0));
+                    let mut line = row.duration.clone();
+                    if let Some(game) = &row.game {
+                        line.push_str("  ·  ");
+                        line.push_str(game);
+                    }
+                    ui.label(RichText::new(line).weak());
+                    if let Some(extra) = &row.extra {
+                        ui.horizontal(|ui| {
+                            verdict_pill(ui, extra.class);
+                            if let Some(t) = extra.gpu_peak_c {
+                                ui.label(RichText::new(format!("GPU peak {t:.0} C")).weak());
+                            }
+                        });
+                    }
+                    if ui.link("All recordings").clicked() {
+                        nav = Some(crate::Page::Recordings);
                     }
                 }
                 None => {
-                    ui.label(RichText::new("not recording").size(20.0).weak());
-                    if let Some(status) = &app.status {
-                        ui.label(RichText::new(status).weak());
-                    }
+                    ui.label(
+                        RichText::new("No recordings yet — hit Start recording up top.").weak(),
+                    );
                 }
             }
+            // Recording state as a quiet one-liner, not a giant card.
+            let status_line = match &app.recording {
+                Some(rec) => format!(
+                    "{}  recording · {}",
+                    icons::RECORD,
+                    fmt_time(rec.started.elapsed().as_secs())
+                ),
+                None => app
+                    .status
+                    .clone()
+                    .unwrap_or_else(|| "not recording".to_string()),
+            };
+            let status_color = if app.recording.is_some() {
+                RED
+            } else {
+                ui.visuals().weak_text_color()
+            };
+            ui.label(RichText::new(status_line).color(status_color).small());
         });
     });
+    nav
+}
+
+fn activity_chart(ui: &mut egui::Ui, app: &App) {
+    let series = |data: &std::collections::VecDeque<f64>| -> Vec<[f64; 2]> {
+        data.iter()
+            .enumerate()
+            .map(|(i, &v)| [i as f64 - (data.len() as f64 - 1.0), v])
+            .collect()
+    };
+    Plot::new("activity")
+        .height(140.0)
+        .show_axes(false)
+        .show_grid(false)
+        .show_x(false)
+        .show_y(false)
+        .allow_zoom(false)
+        .allow_drag(false)
+        .allow_scroll(false)
+        .allow_boxed_zoom(false)
+        .include_x(-60.0)
+        .include_x(0.0)
+        .include_y(0.0)
+        .include_y(100.0)
+        .show(ui, |plot_ui| {
+            plot_ui.line(
+                Line::new(PlotPoints::from(series(&app.hist.cpu_pct)))
+                    .color(ACCENT)
+                    .width(2.0_f32)
+                    .fill(0.0_f32),
+            );
+            if !app.hist.gpu_util_pct.is_empty() {
+                plot_ui.line(
+                    Line::new(PlotPoints::from(series(&app.hist.gpu_util_pct)))
+                        .color(AMBER)
+                        .width(2.0_f32),
+                );
+            }
+        });
+}
+
+/// Placeholder until the temperature-source decision: explains the state
+/// and the current manual route.
+pub fn temp_setup(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
+    let mut nav = None;
+    if ui.button("< Overview").clicked() {
+        nav = Some(crate::Page::Overview);
+    }
+    ui.heading(format!("{}  Set up CPU temperature", icons::THERMOMETER));
+    ui.add_space(6.0);
+    card(ui, |ui| {
+        match app.info.as_ref().and_then(|i| i.cpu_temp_source) {
+            Some(source) => {
+                ui.label(format!("CPU temperature is already working, via {source}."));
+            }
+            None => {
+                ui.label(
+                    "Windows does not let apps read the CPU temperature directly, so heatlog \
+                     borrows the reading from a monitoring app when one is running.",
+                );
+                ui.add_space(6.0);
+                ui.label(RichText::new("The current manual route:").strong());
+                ui.label("1.  Install LibreHardwareMonitor (free, open source):");
+                ui.label(
+                    RichText::new("    winget install LibreHardwareMonitor.LibreHardwareMonitor")
+                        .monospace(),
+                );
+                ui.label("2.  In it, enable Options > Remote Web Server.");
+                ui.label("3.  Restart heatlog.");
+                ui.add_space(6.0);
+                ui.label(
+                    RichText::new(
+                        "A guided in-app setup with automatic source detection is planned \
+                         for this page.",
+                    )
+                    .weak(),
+                );
+            }
+        }
+    });
+    nav
 }
 
 fn animated(ui: &egui::Ui, id: &str, target: f32) -> f32 {

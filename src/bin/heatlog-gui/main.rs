@@ -35,6 +35,12 @@ fn lerp(a: Color32, b: Color32, t: f32) -> Color32 {
     )
 }
 
+/// Usage gauges stay inside the brand accents: amber when quiet, rust when
+/// pegged. (The heat scale with its cool blue is for temperatures only.)
+pub fn usage_color(frac: f32) -> Color32 {
+    lerp(AMBER, ACCENT, frac)
+}
+
 /// The heat scale: cool blue -> warm amber -> rust red.
 pub fn heat_color(frac: f32) -> Color32 {
     if frac < 0.5 {
@@ -120,6 +126,8 @@ pub enum Page {
     Memory,
     Recordings,
     Settings,
+    /// CPU-temperature setup, reached from the Overview banner.
+    TempSetup,
 }
 
 #[derive(Default)]
@@ -265,7 +273,16 @@ impl eframe::App for App {
                     return;
                 }
                 match self.page {
-                    Page::Overview => pages::overview(ui, self),
+                    Page::Overview => {
+                        if let Some(page) = pages::overview(ui, self) {
+                            self.page = page;
+                        }
+                    }
+                    Page::TempSetup => {
+                        if let Some(page) = pages::temp_setup(ui, self) {
+                            self.page = page;
+                        }
+                    }
                     Page::Cpu => pages::cpu(ui, self),
                     Page::Gpu => pages::gpu(ui, self),
                     Page::Memory => pages::memory(ui, self),
