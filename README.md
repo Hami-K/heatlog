@@ -105,6 +105,11 @@ NVIDIA card) and the integrated one appears beneath it on the GPU page, with
 its own figures; the two are never added together, and the same GPU is never
 listed twice.
 
+**Known issue on non-NVIDIA GPUs**: the usage trend is reliable - when it
+rises, the GPU is busier - but the exact percentage can differ from the one
+Task Manager shows, and heatlog sometimes reads higher. It is being looked at
+for a later version.
+
 **Dedicated AMD GPUs are experimental**: that combination has never run on
 real hardware, so heatlog labels it as untested in the app rather than
 implying otherwise. Integrated AMD and Intel graphics are tested and part of
