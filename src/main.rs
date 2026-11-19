@@ -208,12 +208,19 @@ fn list_sessions(cfg: &config::Config) -> Result<()> {
 
 fn snapshot() -> Result<()> {
     println!("== GPU ==");
-    match sensors::gpu::GpuSensor::new() {
-        Ok(gpu) => match gpu.info().and_then(|info| Ok((info, gpu.read()?))) {
-            Ok((info, s)) => print_gpu(&info, &s),
-            Err(e) => println!("GPU found but reading sensors failed: {e:#}"),
-        },
-        Err(_) => println!("GPU: unavailable (no NVIDIA driver/GPU detected on this machine)"),
+    let mut gpus = sensors::gpu::detect();
+    if gpus.is_empty() {
+        println!("GPU: unavailable (no GPU heatlog can read on this machine)");
+    }
+    for (i, gpu) in gpus.iter_mut().enumerate() {
+        if i > 0 {
+            println!();
+        }
+        let info = gpu.info().clone();
+        match gpu.read() {
+            Ok(sample) => print_gpu(&info, &sample),
+            Err(e) => println!("{}: reading sensors failed: {e:#}", info.name),
+        }
     }
 
     println!();
@@ -242,23 +249,54 @@ fn snapshot() -> Result<()> {
 }
 
 fn print_gpu(info: &sensors::gpu::GpuInfo, s: &sensors::gpu::GpuSample) {
-    println!("Name:         {}", info.name);
-    println!("Temperature:  {} °C", s.temp_c);
-    println!("Core clock:   {} MHz", s.core_mhz);
-    println!("Memory clock: {} MHz", s.mem_mhz);
+    let mut tags = Vec::new();
+    if info.integrated {
+        tags.push("integrated");
+    }
+    if info.experimental {
+        tags.push("experimental");
+    }
     println!(
-        "Utilisation:  GPU {}%  /  memory bus {}%",
-        s.util_pct, s.mem_util_pct
+        "Name:         {}{}",
+        info.name,
+        if tags.is_empty() {
+            String::new()
+        } else {
+            format!("  [{}]", tags.join(", "))
+        }
     );
-    println!("Power draw:   {:.1} W", s.power_w);
-    println!(
-        "VRAM:         {} / {} MiB",
-        s.vram_used_mib, info.vram_total_mib
-    );
-    if s.throttle.is_empty() {
-        println!("Throttling:   none");
-    } else {
-        println!("Throttling:   {}", s.throttle.join(", "));
+    println!("Read through: {}", info.source);
+    // Only what this GPU reports; the rest says so rather than printing 0.
+    match s.temp_c {
+        Some(t) => println!("Temperature:  {t} \u{00b0}C"),
+        None => println!("Temperature:  not reported"),
+    }
+    if let Some(mhz) = s.core_mhz {
+        println!("Core clock:   {mhz} MHz");
+    }
+    if let Some(mhz) = s.mem_mhz {
+        println!("Memory clock: {mhz} MHz");
+    }
+    match s.mem_util_pct {
+        Some(mem) => println!("Utilisation:  GPU {}%  /  memory bus {mem}%", s.util_pct),
+        None => println!("Utilisation:  GPU {}%", s.util_pct),
+    }
+    match s.power_w {
+        Some(w) => println!("Power draw:   {w:.1} W"),
+        None => println!("Power draw:   not reported"),
+    }
+    match (info.vram_total_mib, s.shared_mem_used_mib) {
+        (Some(total), _) => println!("VRAM:         {} / {total} MiB", s.vram_used_mib),
+        (None, Some(shared)) => println!(
+            "Memory:       {} MiB dedicated + {shared} MiB shared",
+            s.vram_used_mib
+        ),
+        (None, None) => println!("Memory:       {} MiB", s.vram_used_mib),
+    }
+    match &s.throttle {
+        None => println!("Throttling:   not reported by this GPU"),
+        Some(reasons) if reasons.is_empty() => println!("Throttling:   none"),
+        Some(reasons) => println!("Throttling:   {}", reasons.join(", ")),
     }
 }
 

@@ -12,6 +12,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 use heatlog::config::{self, Config};
 use heatlog::recorder::{self, Sensors};
 use heatlog::sensors::cpu_temp::{self, Availability};
+use heatlog::sensors::gpu::GpuInfo;
 use heatlog::session::{Sample, SessionWriter};
 
 pub enum Cmd {
@@ -28,7 +29,11 @@ pub enum Cmd {
 
 pub struct Info {
     pub cpu_name: String,
-    pub gpu_name: Option<String>,
+    /// The main GPU and, on a machine that has one, the second GPU beside
+    /// it. Kept whole rather than reduced to a name: the page has to say
+    /// where the numbers come from and what this GPU cannot report.
+    pub gpu: Option<GpuInfo>,
+    pub gpu2: Option<GpuInfo>,
     pub ram_total_mib: u64,
     pub cpu_temp_source: Option<&'static str>,
     pub games: Vec<String>,
@@ -100,7 +105,8 @@ fn run(ctx: egui::Context, cmds: Receiver<Cmd>, events: Sender<Event>) {
     let info = |sensors: &Sensors, cfg: &Config| {
         Event::Ready(Box::new(Info {
             cpu_name: sensors.cpu_name().to_string(),
-            gpu_name: sensors.gpu_info().map(|g| g.name.clone()),
+            gpu: sensors.gpu_info().cloned(),
+            gpu2: sensors.gpu2_info().cloned(),
             ram_total_mib: sensors.ram_total_mib(),
             cpu_temp_source: sensors.cpu_temp_source(),
             games: cfg.games.clone(),

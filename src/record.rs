@@ -111,7 +111,7 @@ pub fn run(
             None => print_status(
                 rec.count(),
                 step.sample.cpu.usage_pct,
-                step.sample.gpu.as_ref().map(|g| g.temp_c),
+                step.sample.gpu.as_ref().and_then(|g| g.temp_c),
                 step.sample.cpu_temp_c,
             ),
         }

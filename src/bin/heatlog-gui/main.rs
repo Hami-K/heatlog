@@ -462,9 +462,15 @@ impl App {
                         push(&mut self.hist.cpu_temp_c, f64::from(t));
                     }
                     if let Some(gpu) = &sample.gpu {
-                        push(&mut self.hist.gpu_temp_c, f64::from(gpu.temp_c));
+                        // Only what this GPU reports: an empty history is
+                        // what tells the pages to leave a chart out.
+                        if let Some(temp) = gpu.temp_c {
+                            push(&mut self.hist.gpu_temp_c, f64::from(temp));
+                        }
                         push(&mut self.hist.gpu_util_pct, f64::from(gpu.util_pct));
-                        push(&mut self.hist.gpu_power_w, gpu.power_w);
+                        if let Some(power) = gpu.power_w {
+                            push(&mut self.hist.gpu_power_w, power);
+                        }
                     }
                     push(&mut self.hist.ram_gb, sample.ram_used_mib as f64 / 1024.0);
                     if let Some(rec) = &mut self.recording {
@@ -838,7 +844,10 @@ impl App {
                     )
                 });
                 let gpu_sub = match self.latest.as_ref().and_then(|s| s.gpu.as_ref()) {
-                    Some(gpu) => Some(format!("{} °C  ·  {}%", gpu.temp_c, gpu.util_pct)),
+                    Some(gpu) => Some(match gpu.temp_c {
+                        Some(temp) => format!("{temp} °C  ·  {}%", gpu.util_pct),
+                        None => format!("{}% used", gpu.util_pct),
+                    }),
                     None => Some("not detected".to_string()),
                 };
                 let ram_total = self.info.as_ref().map(|i| i.ram_total_mib).unwrap_or(0);
@@ -853,7 +862,12 @@ impl App {
                 });
 
                 use egui_phosphor::regular as icons;
-                let gpu_graph = (!self.hist.gpu_temp_c.is_empty()).then_some(&self.hist.gpu_temp_c);
+                // A GPU with no temperature still has a usage line to show.
+                let gpu_graph = if self.hist.gpu_temp_c.is_empty() {
+                    (!self.hist.gpu_util_pct.is_empty()).then_some(&self.hist.gpu_util_pct)
+                } else {
+                    Some(&self.hist.gpu_temp_c)
+                };
                 let items = [
                     NavItem::plain(Page::Overview, icons::GAUGE, "Overview"),
                     NavItem {

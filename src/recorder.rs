@@ -12,7 +12,7 @@ use sysinfo::{Pid, ProcessesToUpdate, System};
 
 use crate::sensors::cpu::CpuSensor;
 use crate::sensors::cpu_temp::{self, CpuTempSource};
-use crate::sensors::gpu::{GpuInfo, GpuSensor};
+use crate::sensors::gpu::{self, GpuInfo, GpuSource};
 use crate::sensors::processes::ProcessWatch;
 use crate::session::{Sample, SessionMeta, SessionWriter};
 
@@ -20,8 +20,9 @@ use crate::session::{Sample, SessionMeta, SessionWriter};
 /// recording anything. Create and use it on one thread: the WMI handles
 /// stay on it.
 pub struct Sensors {
-    gpu: Option<GpuSensor>,
-    gpu_info: Option<GpuInfo>,
+    /// Every GPU worth showing, the one a game runs on first. Usually one;
+    /// two on a laptop with both an integrated and a dedicated GPU.
+    gpus: Vec<Box<dyn GpuSource>>,
     cpu: CpuSensor,
     temp_source: Option<Box<dyn CpuTempSource>>,
     /// A second source, asked for fan speeds only when the temperature
@@ -38,15 +39,13 @@ impl Sensors {
     /// The first init on a machine can take a few seconds (WMI/COM
     /// startup, temperature source probing).
     pub fn init(lhm_url: &str, record_processes: bool) -> Self {
-        let gpu = GpuSensor::new().ok();
-        let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
+        let gpus = gpu::detect();
         let mut cpu = CpuSensor::new();
         let mut temp_source = cpu_temp::detect(lhm_url);
         let fan_source = fan_source_for(lhm_url, &mut temp_source);
         let first_read = cpu.read();
         Self {
-            gpu,
-            gpu_info,
+            gpus,
             cpu,
             temp_source,
             fan_source,
@@ -57,11 +56,18 @@ impl Sensors {
     }
 
     pub fn gpu_available(&self) -> bool {
-        self.gpu.is_some()
+        !self.gpus.is_empty()
     }
 
+    /// The main GPU: the dedicated one where there is a pair.
     pub fn gpu_info(&self) -> Option<&GpuInfo> {
-        self.gpu_info.as_ref()
+        self.gpus.first().map(|gpu| gpu.info())
+    }
+
+    /// The second GPU, kept separate so its numbers are never mixed into
+    /// the main one's.
+    pub fn gpu2_info(&self) -> Option<&GpuInfo> {
+        self.gpus.get(1).map(|gpu| gpu.info())
     }
 
     pub fn cpu_name(&self) -> &str {
@@ -93,7 +99,9 @@ impl Sensors {
     /// make the delta-based counters meaningless.
     pub fn read_sample(&mut self) -> Sample {
         let cpu_snap = self.cpu.read();
-        let gpu_snap = self.gpu.as_ref().and_then(|g| g.read().ok());
+        let mut gpus = self.gpus.iter_mut().map(|gpu| gpu.read().ok());
+        let gpu_snap = gpus.next().flatten();
+        let gpu2_snap = gpus.next().flatten();
         let mut reading = self
             .temp_source
             .as_mut()
@@ -109,7 +117,14 @@ impl Sensors {
             .as_mut()
             .map(|watch| watch.top(5))
             .unwrap_or_default();
-        Sample::new(Utc::now(), cpu_snap, gpu_snap, reading, top_procs)
+        Sample::new(
+            Utc::now(),
+            cpu_snap,
+            gpu_snap,
+            gpu2_snap,
+            reading,
+            top_procs,
+        )
     }
 
     pub fn session_meta(&self, interval_secs: u64, game: Option<String>) -> SessionMeta {
@@ -118,8 +133,10 @@ impl Sensors {
             interval_secs,
             cpu_name: self.cpu_name.clone(),
             ram_total_mib: Some(self.ram_total_mib),
-            gpu_name: self.gpu_info.as_ref().map(|g| g.name.clone()),
-            vram_total_mib: self.gpu_info.as_ref().map(|g| g.vram_total_mib),
+            gpu_name: self.gpu_info().map(|g| g.name.clone()),
+            vram_total_mib: self.gpu_info().and_then(|g| g.vram_total_mib),
+            gpu_source: self.gpu_info().map(|g| g.source.to_string()),
+            gpu2_name: self.gpu2_info().map(|g| g.name.clone()),
             cpu_temp_source: self.cpu_temp_source().map(str::to_string),
             game,
         }

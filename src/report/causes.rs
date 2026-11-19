@@ -26,10 +26,11 @@ fn slow_samples(session: &Session) -> Vec<bool> {
         .iter()
         .enumerate()
         .map(|(i, sample)| {
-            let gpu = sample
-                .gpu
-                .as_ref()
-                .is_some_and(|gpu| !gpu.throttle.is_empty());
+            let gpu = sample.gpu.as_ref().is_some_and(|gpu| {
+                gpu.throttle
+                    .as_ref()
+                    .is_some_and(|reasons| !reasons.is_empty())
+            });
             gpu || cpu_flags.get(i).copied().unwrap_or(false)
         })
         .collect()
@@ -69,6 +70,7 @@ pub fn causes(session: &Session, summary: &Summary) -> Vec<Cause> {
         let thermal: u64 = gpu
             .throttle
             .iter()
+            .flatten()
             .filter(|t| t.reason.contains("thermal") || t.reason.contains("slowdown"))
             .map(|t| t.seconds)
             .sum();
@@ -79,13 +81,14 @@ pub fn causes(session: &Session, summary: &Summary) -> Vec<Cause> {
                     "The graphics chip reached its temperature limit and slowed down to \
                      protect itself, for {} in total. Peak {:.0} °C.",
                     super::fmt_time(thermal),
-                    gpu.temp_c.peak
+                    gpu.temp_c.as_ref().map_or(0.0, |t| t.peak)
                 ),
             });
         }
         let power: u64 = gpu
             .throttle
             .iter()
+            .flatten()
             .filter(|t| t.reason.contains("power"))
             .map(|t| t.seconds)
             .sum();
@@ -165,15 +168,17 @@ mod tests {
                 per_core_usage: vec![50.0],
             },
             gpu: Some(GpuSample {
-                temp_c: 86,
-                core_mhz: 2400,
-                mem_mhz: 8000,
+                temp_c: Some(86),
+                core_mhz: Some(2400),
+                mem_mhz: Some(8000),
                 util_pct: 98,
-                mem_util_pct: 60,
-                power_w: 110.0,
+                mem_util_pct: Some(60),
+                power_w: Some(110.0),
                 vram_used_mib: 6000,
-                throttle: throttle.iter().map(|t| t.to_string()).collect(),
+                throttle: Some(throttle.iter().map(|t| t.to_string()).collect()),
+                ..Default::default()
             }),
+            gpu2: None,
             cpu_temp_c: Some(75.0),
             ram_used_mib: ram_mib,
             fans: vec![crate::session::Fan {
@@ -200,6 +205,8 @@ mod tests {
                 ram_total_mib: Some(16_000),
                 gpu_name: Some("test gpu".into()),
                 vram_total_mib: Some(8192),
+                gpu_source: None,
+                gpu2_name: None,
                 cpu_temp_source: Some("test".into()),
                 game: Some("Game.exe".into()),
             },

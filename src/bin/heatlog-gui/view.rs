@@ -317,23 +317,47 @@ fn technical_ui(ui: &mut egui::Ui, s: &Summary) {
             if let Some(gpu) = &s.gpu {
                 ui.label(RichText::new(s.gpu_name.as_deref().unwrap_or("GPU")).strong());
                 egui::Grid::new("gpu-tech").striped(true).show(ui, |ui| {
-                    plain(ui, "Temperature", &gpu.temp_c, "°C");
-                    ghz(ui, "Speed", &gpu.core_mhz);
+                    // Rows for the figures this GPU reported, and no rows
+                    // of zeroes for the ones it cannot.
+                    if let Some(temp) = &gpu.temp_c {
+                        plain(ui, "Temperature", temp, "°C");
+                    }
+                    if let Some(clock) = &gpu.core_mhz {
+                        ghz(ui, "Speed", clock);
+                    }
                     plain(ui, "Utilization", &gpu.util_pct, "%");
-                    plain(ui, "Power draw", &gpu.power_w, "W");
-                    gb(ui, "VRAM used", &gpu.vram_used_mib);
+                    if let Some(power) = &gpu.power_w {
+                        plain(ui, "Power draw", power, "W");
+                    }
+                    gb(ui, "Memory used", &gpu.mem_used_mib);
                 });
-                for t in &gpu.throttle {
-                    ui.label(format!(
-                        "{}: {} episode(s), {} total, longest at {}",
-                        t.reason,
-                        t.episodes,
-                        fmt_time(t.seconds),
-                        fmt_time(t.longest_at_secs)
-                    ));
+                match &gpu.throttle {
+                    None => {
+                        ui.label(RichText::new("Throttling was not reported by this GPU.").weak());
+                    }
+                    Some(reasons) => {
+                        for t in reasons {
+                            ui.label(format!(
+                                "{}: {} episode(s), {} total, longest at {}",
+                                t.reason,
+                                t.episodes,
+                                fmt_time(t.seconds),
+                                fmt_time(t.longest_at_secs)
+                            ));
+                        }
+                    }
                 }
             } else {
-                ui.label("No NVIDIA GPU detected");
+                ui.label("No GPU detected");
+            }
+
+            if let Some(second) = &s.gpu2 {
+                ui.add_space(8.0);
+                ui.label(RichText::new(second.name.as_deref().unwrap_or("Second GPU")).strong());
+                egui::Grid::new("gpu2-tech").striped(true).show(ui, |ui| {
+                    plain(ui, "Utilization", &second.util_pct, "%");
+                    gb(ui, "Memory used", &second.mem_used_mib);
+                });
             }
 
             ui.add_space(8.0);

@@ -129,61 +129,146 @@ pub fn cpu(ui: &mut egui::Ui, app: &App) {
 }
 
 pub fn gpu(ui: &mut egui::Ui, app: &App) {
-    let name = app.info.as_ref().and_then(|i| i.gpu_name.clone());
-    match (&name, app.latest.as_ref().and_then(|s| s.gpu.as_ref())) {
-        (Some(name), Some(g)) => {
-            ui.heading(format!("{}  {name}", icons::GRAPHICS_CARD));
+    let info = app.info.as_ref();
+    let main = info.and_then(|i| i.gpu.as_ref());
+    match (main, app.latest.as_ref().and_then(|s| s.gpu.as_ref())) {
+        (Some(gpu_info), Some(g)) => {
+            ui.heading(format!("{}  {}", icons::GRAPHICS_CARD, gpu_info.name));
             ui.add_space(6.0);
-            live_plot(ui, "gpu", &app.hist.gpu_temp_c, Some(100.0), |v| {
-                format!("GPU {v:.0} °C")
-            });
+            source_note(ui, gpu_info);
+            // A GPU with no temperature to show gets its usage charted
+            // instead of an empty plot.
+            match g.temp_c {
+                Some(_) => live_plot(ui, "gpu", &app.hist.gpu_temp_c, Some(100.0), |v| {
+                    format!("GPU {v:.0} °C")
+                }),
+                None => live_plot(ui, "gpu", &app.hist.gpu_util_pct, Some(100.0), |v| {
+                    format!("GPU usage {v:.0}%")
+                }),
+            }
             ui.add_space(10.0);
-            let stats = vec![
-                ("Temperature", format!("{} °C", g.temp_c)),
-                ("Utilization", format!("{}%", g.util_pct)),
-                (
-                    "Speed",
-                    format!("{:.2} GHz", f64::from(g.core_mhz) / 1000.0),
-                ),
-                (
-                    "Memory speed",
-                    format!("{:.2} GHz", f64::from(g.mem_mhz) / 1000.0),
-                ),
-                ("Power draw", format!("{:.0} W", g.power_w)),
-                (
-                    "VRAM used",
-                    format!("{:.1} GB", g.vram_used_mib as f64 / 1024.0),
-                ),
-                (
-                    "Throttling now",
-                    if g.throttle.is_empty() {
-                        "no".to_string()
-                    } else {
-                        g.throttle.join(", ")
-                    },
-                ),
-            ];
-            stat_grid(ui, "gpu-stats", &stats);
+            stat_grid(ui, "gpu-stats", &gpu_stats(g, gpu_info));
+
+            if let Some(second) = info.and_then(|i| i.gpu2.as_ref()) {
+                ui.add_space(16.0);
+                ui.heading(format!("{}  {}", icons::GRAPHICS_CARD, second.name));
+                ui.add_space(6.0);
+                source_note(ui, second);
+                match app.latest.as_ref().and_then(|s| s.gpu2.as_ref()) {
+                    Some(g) => stat_grid(ui, "gpu2-stats", &gpu_stats(g, second)),
+                    None => {
+                        ui.label(RichText::new("No reading yet.").weak());
+                    }
+                }
+            }
         }
         _ => {
             ui.heading(format!("{}  GPU", icons::GRAPHICS_CARD));
             ui.add_space(6.0);
             card(ui, |ui| {
                 ui.label(
-                    RichText::new(format!("{}  No NVIDIA GPU detected", icons::PLUGS))
+                    RichText::new(format!("{}  No GPU detected", icons::PLUGS))
                         .strong()
                         .size(15.0),
                 );
                 ui.label(
                     RichText::new(
-                        "CPU and memory are still monitored and recorded. On a machine with \
-                         an NVIDIA GPU, temperature, clocks, power and throttle reasons appear here.",
+                        "CPU and memory are still monitored and recorded. heatlog reads \
+                         NVIDIA GPUs through NVIDIA's own library, and Intel and AMD GPUs \
+                         through Windows' graphics counters.",
                     )
                     .weak(),
                 );
             });
         }
     }
+}
+
+/// Where a GPU's numbers come from, and what that costs in detail. Said
+/// once per GPU rather than repeated on every row.
+fn source_note(ui: &mut egui::Ui, info: &heatlog::sensors::gpu::GpuInfo) {
+    let mut parts: Vec<String> = Vec::new();
+    if info.integrated {
+        parts.push("integrated".to_string());
+    }
+    if info.source == "Windows" {
+        parts
+            .push("read through Windows, which reports no clocks, power or throttling".to_string());
+    }
+    if info.experimental {
+        parts.push(
+            "experimental: this combination has never been tested on real hardware".to_string(),
+        );
+    }
+    if parts.is_empty() {
+        return;
+    }
+    let text = parts.join(" - ");
+    ui.label(if info.experimental {
+        RichText::new(text).color(AMBER).small()
+    } else {
+        RichText::new(text).weak().small()
+    });
+    ui.add_space(4.0);
+}
+
+/// Only the figures this GPU actually reports. A missing one is named as
+/// not reported rather than shown as zero.
+fn gpu_stats(
+    g: &heatlog::session::GpuSample,
+    info: &heatlog::sensors::gpu::GpuInfo,
+) -> Vec<(&'static str, String)> {
+    let mut stats = vec![("Utilization", format!("{}%", g.util_pct))];
+    if let Some(temp) = g.temp_c {
+        stats.push(("Temperature", format!("{temp} °C")));
+    } else {
+        stats.push(("Temperature", "not reported".to_string()));
+    }
+    if let Some(mhz) = g.core_mhz {
+        stats.push(("Speed", format!("{:.2} GHz", f64::from(mhz) / 1000.0)));
+    }
+    if let Some(mhz) = g.mem_mhz {
+        stats.push((
+            "Memory speed",
+            format!("{:.2} GHz", f64::from(mhz) / 1000.0),
+        ));
+    }
+    if let Some(power) = g.power_w {
+        stats.push(("Power draw", format!("{power:.0} W")));
+    }
+    match (info.vram_total_mib, g.shared_mem_used_mib) {
+        // A card with memory of its own.
+        (Some(total), _) => stats.push((
+            "VRAM used",
+            format!(
+                "{:.1} of {:.0} GB",
+                g.vram_used_mib as f64 / 1024.0,
+                total as f64 / 1024.0
+            ),
+        )),
+        // An integrated GPU borrows system memory; there is no total of
+        // its own to show it against.
+        (None, Some(shared)) => stats.push((
+            "Memory used",
+            format!(
+                "{:.1} GB shared",
+                (g.vram_used_mib + shared) as f64 / 1024.0
+            ),
+        )),
+        (None, None) => stats.push((
+            "Memory used",
+            format!("{:.1} GB", g.vram_used_mib as f64 / 1024.0),
+        )),
+    }
+    stats.push((
+        "Throttling now",
+        match &g.throttle {
+            None => "not reported by this GPU".to_string(),
+            Some(reasons) if reasons.is_empty() => "no".to_string(),
+            Some(reasons) => reasons.join(", "),
+        },
+    ));
+    stats
 }
 
 pub fn memory(ui: &mut egui::Ui, app: &App) {
@@ -322,13 +407,16 @@ pub fn overview(ui: &mut egui::Ui, app: &App) -> Option<crate::Page> {
                     center: format!("{util:.0}%"),
                     label: "GPU usage",
                 });
-                let temp = app.smooth(|s| s.gpu.as_ref().map_or(0.0, |g| g.temp_c as f32));
-                gauges.push(G {
-                    frac: temp_frac(f64::from(temp)),
-                    color: heat_color(temp_frac(f64::from(temp))),
-                    center: format!("{temp:.0} °C"),
-                    label: "GPU temp",
-                });
+                if s.gpu.as_ref().is_some_and(|g| g.temp_c.is_some()) {
+                    let temp =
+                        app.smooth(|s| s.gpu.as_ref().and_then(|g| g.temp_c).unwrap_or(0) as f32);
+                    gauges.push(G {
+                        frac: temp_frac(f64::from(temp)),
+                        color: heat_color(temp_frac(f64::from(temp))),
+                        center: format!("{temp:.0} °C"),
+                        label: "GPU temp",
+                    });
+                }
             }
             if s.cpu_temp_c.is_some() {
                 let temp = app.smooth(|s| s.cpu_temp_c.unwrap_or(0.0));
@@ -562,10 +650,14 @@ fn health(app: &App) -> Health {
         };
     };
     health_of(
-        s.gpu.as_ref().map(|g| f64::from(g.temp_c)),
+        s.gpu.as_ref().and_then(|g| g.temp_c).map(f64::from),
         s.cpu_temp_c.map(f64::from),
-        s.gpu.as_ref().is_some_and(|g| !g.throttle.is_empty()),
-        app.info.as_ref().is_some_and(|i| i.gpu_name.is_some()),
+        s.gpu.as_ref().is_some_and(|g| {
+            g.throttle
+                .as_ref()
+                .is_some_and(|reasons| !reasons.is_empty())
+        }),
+        app.info.as_ref().is_some_and(|i| i.gpu.is_some()),
     )
 }
 
@@ -929,7 +1021,8 @@ impl Recordings {
                         let series: Vec<f64> = if s.samples.iter().any(|x| x.gpu.is_some()) {
                             s.samples
                                 .iter()
-                                .filter_map(|x| x.gpu.as_ref().map(|g| f64::from(g.temp_c)))
+                                .filter_map(|x| x.gpu.as_ref().and_then(|g| g.temp_c))
+                                .map(f64::from)
                                 .collect()
                         } else {
                             s.samples
@@ -940,7 +1033,11 @@ impl Recordings {
                         let step = (series.len() / 60).max(1);
                         Some(RowExtra {
                             class: report::verdict(&summary).0,
-                            gpu_peak_c: summary.gpu.as_ref().map(|g| g.temp_c.peak),
+                            gpu_peak_c: summary
+                                .gpu
+                                .as_ref()
+                                .and_then(|g| g.temp_c.as_ref())
+                                .map(|t| t.peak),
                             cpu_peak_c: summary.cpu_temp.as_ref().map(|t| t.peak),
                             spark: series.iter().step_by(step).copied().collect(),
                         })

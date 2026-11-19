@@ -98,16 +98,32 @@ fn gb(mib: u64) -> f64 {
 
 fn headline(s: &Summary) -> String {
     let mut out = String::from("<ul class=\"facts\">");
-    if let Some(gpu) = &s.gpu {
-        let _ = write!(
-            out,
-            "<li>GPU peaked at {:.0} °C and {:.1} GHz, drawing up to {:.0} W</li>",
-            gpu.temp_c.peak,
-            gpu.core_mhz.peak / 1000.0,
-            gpu.power_w.peak
-        );
-    } else {
-        out.push_str("<li>No NVIDIA GPU detected — CPU and memory only</li>");
+    match &s.gpu {
+        // An integrated GPU reports load and memory and nothing else, so
+        // the headline says what it can rather than printing zeroes.
+        Some(gpu) => match (&gpu.temp_c, &gpu.core_mhz, &gpu.power_w) {
+            (Some(temp), Some(clock), Some(power)) => {
+                let _ = write!(
+                    out,
+                    "<li>GPU peaked at {:.0} °C and {:.1} GHz, drawing up to {:.0} W</li>",
+                    temp.peak,
+                    clock.peak / 1000.0,
+                    power.peak
+                );
+            }
+            _ => {
+                let _ = write!(
+                    out,
+                    "<li>GPU peaked at {:.0}% usage{}</li>",
+                    gpu.util_pct.peak,
+                    match &gpu.temp_c {
+                        Some(temp) => format!(" and {:.0} °C", temp.peak),
+                        None => String::new(),
+                    }
+                );
+            }
+        },
+        None => out.push_str("<li>No GPU detected — CPU and memory only</li>"),
     }
     let _ = write!(
         out,
@@ -152,35 +168,65 @@ fn technical(s: &Summary) -> String {
         )
     };
 
+    // A row per figure the GPU could actually report; the rest are left
+    // out rather than shown as zero.
+    let optional = |label: &str, series: &Option<Series>, unit: &str| match series {
+        Some(series) => row(label, series, unit),
+        None => String::new(),
+    };
+
     if let Some(gpu) = &s.gpu {
         let _ = write!(
             out,
             "<h2>GPU &mdash; {}</h2><table>{}{}{}{}{}</table>",
             s.gpu_name.as_deref().unwrap_or("unknown"),
-            row("Temperature", &gpu.temp_c, "°C"),
-            row("Core clock", &gpu.core_mhz, "MHz"),
+            optional("Temperature", &gpu.temp_c, "°C"),
+            optional("Core clock", &gpu.core_mhz, "MHz"),
             row("Utilisation", &gpu.util_pct, "%"),
-            row("Power draw", &gpu.power_w, "W"),
-            row("VRAM used", &gpu.vram_used_mib, "MiB"),
+            optional("Power draw", &gpu.power_w, "W"),
+            row("Graphics memory used", &gpu.mem_used_mib, "MiB"),
         );
-        if gpu.throttle.is_empty() {
-            out.push_str("<p>Throttling: none</p>");
-        } else {
-            out.push_str("<p>Throttling</p><ul>");
-            for t in &gpu.throttle {
+        match &gpu.throttle {
+            None => {
                 let _ = write!(
                     out,
-                    "<li>{}: {} episode(s), {} total, longest at {}</li>",
-                    t.reason,
-                    t.episodes,
-                    fmt_time(t.seconds),
-                    fmt_time(t.longest_at_secs)
+                    "<p class=\"muted\">Throttling: not reported by this GPU{}</p>",
+                    match s.gpu_source.as_deref() {
+                        Some("Windows") => " — Windows exposes no throttle signal for it",
+                        _ => "",
+                    }
                 );
             }
-            out.push_str("</ul>");
+            Some(reasons) if reasons.is_empty() => {
+                out.push_str("<p>Throttling: none</p>");
+            }
+            Some(reasons) => {
+                out.push_str("<p>Throttling</p><ul>");
+                for t in reasons {
+                    let _ = write!(
+                        out,
+                        "<li>{}: {} episode(s), {} total, longest at {}</li>",
+                        t.reason,
+                        t.episodes,
+                        fmt_time(t.seconds),
+                        fmt_time(t.longest_at_secs)
+                    );
+                }
+                out.push_str("</ul>");
+            }
         }
     } else {
-        out.push_str("<h2>GPU</h2><p>No NVIDIA GPU detected</p>");
+        out.push_str("<h2>GPU</h2><p>No GPU detected</p>");
+    }
+
+    if let Some(second) = &s.gpu2 {
+        let _ = write!(
+            out,
+            "<h2>Second GPU &mdash; {}</h2><table>{}{}</table>",
+            second.name.as_deref().unwrap_or("unknown"),
+            row("Utilisation", &second.util_pct, "%"),
+            row("Graphics memory used", &second.mem_used_mib, "MiB"),
+        );
     }
 
     let _ = write!(

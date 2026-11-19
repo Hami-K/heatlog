@@ -25,6 +25,10 @@ pub struct Summary {
     pub gpu_name: Option<String>,
     pub cpu_name: String,
     pub gpu: Option<GpuSummary>,
+    /// Which interface the GPU was read through, when the session says.
+    pub gpu_source: Option<String>,
+    /// A second GPU's own figures, never folded into the main one's.
+    pub gpu2: Option<SecondGpu>,
     pub cpu: CpuSummary,
     pub cpu_temp: Option<Series>,
     pub cpu_temp_source: Option<String>,
@@ -54,12 +58,23 @@ pub struct Series {
 }
 
 pub struct GpuSummary {
-    pub temp_c: Series,
-    pub core_mhz: Series,
-    pub power_w: Series,
+    /// Optional throughout: an integrated GPU reports load and memory but
+    /// commonly no temperature, clock or power at all.
+    pub temp_c: Option<Series>,
+    pub core_mhz: Option<Series>,
+    pub power_w: Option<Series>,
     pub util_pct: Series,
-    pub vram_used_mib: Series,
-    pub throttle: Vec<Throttle>,
+    pub mem_used_mib: Series,
+    /// None when this GPU cannot report throttling. That is not the same
+    /// as reporting none, and no verdict may treat it as such.
+    pub throttle: Option<Vec<Throttle>>,
+}
+
+/// The integrated GPU beside a dedicated one: what little it reports.
+pub struct SecondGpu {
+    pub name: Option<String>,
+    pub util_pct: Series,
+    pub mem_used_mib: Series,
 }
 
 pub struct Throttle {
@@ -103,6 +118,8 @@ pub fn analyze(session: &Session) -> Result<Summary> {
         gpu_name: session.meta.gpu_name.clone(),
         cpu_name: session.meta.cpu_name.clone(),
         gpu: analyze_gpu(samples, &offsets, interval),
+        gpu_source: session.meta.gpu_source.clone(),
+        gpu2: analyze_second_gpu(samples, &offsets, session.meta.gpu2_name.clone()),
         cpu: analyze_cpu(samples, &offsets, interval),
         cpu_temp: series(
             samples
@@ -133,32 +150,68 @@ fn analyze_gpu(samples: &[Sample], offsets: &[u64], interval: u64) -> Option<Gpu
         return None;
     }
 
-    let reasons: BTreeSet<&String> = gpu.iter().flat_map(|(_, g)| &g.throttle).collect();
-    let throttle = reasons
-        .into_iter()
-        .filter_map(|reason| {
-            let flags: Vec<bool> = gpu
-                .iter()
-                .map(|(_, g)| g.throttle.contains(reason))
-                .collect();
-            let runs = episodes(&flags);
-            let longest = runs.iter().max_by_key(|(_, len)| *len)?;
-            Some(Throttle {
-                reason: reason.clone(),
-                seconds: flags.iter().filter(|f| **f).count() as u64 * interval,
-                episodes: runs.len(),
-                longest_at_secs: gpu[longest.0].0,
+    // A GPU that never reported throttling at all is a different thing
+    // from one that reported none.
+    let reportable = gpu.iter().any(|(_, g)| g.throttle.is_some());
+    let throttle = reportable.then(|| {
+        let reasons: BTreeSet<&String> = gpu
+            .iter()
+            .filter_map(|(_, g)| g.throttle.as_ref())
+            .flatten()
+            .collect();
+        reasons
+            .into_iter()
+            .filter_map(|reason| {
+                let flags: Vec<bool> = gpu
+                    .iter()
+                    .map(|(_, g)| {
+                        g.throttle
+                            .as_ref()
+                            .is_some_and(|reasons| reasons.contains(reason))
+                    })
+                    .collect();
+                let runs = episodes(&flags);
+                let longest = runs.iter().max_by_key(|(_, len)| *len)?;
+                Some(Throttle {
+                    reason: reason.clone(),
+                    seconds: flags.iter().filter(|f| **f).count() as u64 * interval,
+                    episodes: runs.len(),
+                    longest_at_secs: gpu[longest.0].0,
+                })
             })
-        })
-        .collect();
+            .collect()
+    });
 
     Some(GpuSummary {
-        temp_c: series(gpu.iter().map(|(t, g)| (*t, f64::from(g.temp_c))))?,
-        core_mhz: series(gpu.iter().map(|(t, g)| (*t, f64::from(g.core_mhz))))?,
-        power_w: series(gpu.iter().map(|(t, g)| (*t, g.power_w)))?,
+        temp_c: series(
+            gpu.iter()
+                .filter_map(|(t, g)| g.temp_c.map(|c| (*t, f64::from(c)))),
+        ),
+        core_mhz: series(
+            gpu.iter()
+                .filter_map(|(t, g)| g.core_mhz.map(|mhz| (*t, f64::from(mhz)))),
+        ),
+        power_w: series(gpu.iter().filter_map(|(t, g)| g.power_w.map(|w| (*t, w)))),
         util_pct: series(gpu.iter().map(|(t, g)| (*t, f64::from(g.util_pct))))?,
-        vram_used_mib: series(gpu.iter().map(|(t, g)| (*t, g.vram_used_mib as f64)))?,
+        mem_used_mib: series(gpu.iter().map(|(t, g)| (*t, g.memory_used_mib() as f64)))?,
         throttle,
+    })
+}
+
+fn analyze_second_gpu(
+    samples: &[Sample],
+    offsets: &[u64],
+    name: Option<String>,
+) -> Option<SecondGpu> {
+    let gpu: Vec<(u64, &crate::session::GpuSample)> = samples
+        .iter()
+        .zip(offsets)
+        .filter_map(|(s, &t)| s.gpu2.as_ref().map(|g| (t, g)))
+        .collect();
+    Some(SecondGpu {
+        name,
+        util_pct: series(gpu.iter().map(|(t, g)| (*t, f64::from(g.util_pct))))?,
+        mem_used_mib: series(gpu.iter().map(|(t, g)| (*t, g.memory_used_mib() as f64)))?,
     })
 }
 
@@ -241,11 +294,15 @@ fn verdict_level(
     cpu_estimated: usize,
     gpu_peak_c: Option<f64>,
     cpu_check_ran: bool,
+    gpu_throttle_known: bool,
 ) -> &'static str {
     if thermal_episodes > 0 {
         "bad"
     } else if other_episodes > 0 || cpu_estimated > 0 || gpu_peak_c.is_some_and(|p| p >= 85.0) {
         "warn"
+    } else if !gpu_throttle_known {
+        // The GPU cannot say whether it slowed down, so neither can we.
+        "na"
     } else if cpu_check_ran {
         "good"
     } else {
@@ -260,7 +317,7 @@ pub fn verdict(s: &Summary) -> (&'static str, String) {
     let mut thermal_at = None;
     let mut thermal_most_secs = 0;
     if let Some(gpu) = &s.gpu {
-        for t in &gpu.throttle {
+        for t in gpu.throttle.iter().flatten() {
             if t.reason.contains("thermal") || t.reason.contains("slowdown") {
                 thermal += t.episodes;
                 // "mostly around minute X" should come from the thermal
@@ -276,8 +333,21 @@ pub fn verdict(s: &Summary) -> (&'static str, String) {
         }
     }
     let cpu_est = s.cpu.throttle.as_ref().map_or(0, |t| t.episodes);
-    let gpu_peak = s.gpu.as_ref().map(|g| g.temp_c.peak);
-    let class = verdict_level(thermal, other, cpu_est, gpu_peak, s.cpu.throttle.is_some());
+    let gpu_peak = s
+        .gpu
+        .as_ref()
+        .and_then(|g| g.temp_c.as_ref())
+        .map(|t| t.peak);
+    // No GPU at all leaves the GPU question open rather than unanswerable.
+    let gpu_throttle_known = s.gpu.as_ref().is_none_or(|g| g.throttle.is_some());
+    let class = verdict_level(
+        thermal,
+        other,
+        cpu_est,
+        gpu_peak,
+        s.cpu.throttle.is_some(),
+        gpu_throttle_known,
+    );
 
     let mut lines = Vec::new();
     if thermal > 0 {
@@ -305,7 +375,14 @@ pub fn verdict(s: &Summary) -> (&'static str, String) {
         ));
     }
     if lines.is_empty() {
-        lines.push(if class == "na" {
+        lines.push(if !gpu_throttle_known {
+            // The honest answer, even though it is the dull one.
+            format!(
+                "{} does not tell Windows when it slows itself down, so heatlog cannot say \
+                 whether it did. The CPU and memory figures in this report are unaffected.",
+                s.gpu_name.as_deref().unwrap_or("This GPU")
+            )
+        } else if class == "na" {
             "Not enough load to check for slowdowns — record during a game for a real result."
                 .to_string()
         } else {
@@ -314,8 +391,7 @@ pub fn verdict(s: &Summary) -> (&'static str, String) {
                     format!("Your GPU ran hot (peak {p:.0} °C) but did not slow itself down.")
                 }
                 Some(_) => "Your laptop stayed cool — no throttling detected.".to_string(),
-                None => "No slowdowns detected. (No NVIDIA GPU was recorded in this session.)"
-                    .to_string(),
+                None => "No slowdowns detected.".to_string(),
             }
         });
     }
@@ -347,6 +423,7 @@ fn cooling_verdict(samples: &[Sample]) -> Cooling {
             s.gpu.as_ref().is_some_and(|g| {
                 g.throttle
                     .iter()
+                    .flatten()
                     .any(|r| r.contains("thermal") || r.contains("slowdown"))
             })
         })
@@ -425,28 +502,52 @@ pub fn print(s: &Summary) {
     println!();
     match (&s.gpu, &s.gpu_name) {
         (Some(gpu), name) => {
-            println!("GPU  {}", name.as_deref().unwrap_or("unknown"));
-            print_series("Temperature", &gpu.temp_c, "°C", 0);
-            print_series("Core clock", &gpu.core_mhz, "MHz", 0);
+            let via = match s.gpu_source.as_deref() {
+                Some("Windows") => "  (via Windows)",
+                _ => "",
+            };
+            println!("GPU  {}{via}", name.as_deref().unwrap_or("unknown"));
+            // Only what this GPU could report: a figure it cannot give is
+            // left out rather than printed as zero.
+            if let Some(temp) = &gpu.temp_c {
+                print_series("Temperature", temp, "°C", 0);
+            }
+            if let Some(clock) = &gpu.core_mhz {
+                print_series("Core clock", clock, "MHz", 0);
+            }
             print_series("Utilisation", &gpu.util_pct, "%", 0);
-            print_series("Power draw", &gpu.power_w, "W", 1);
-            print_series("VRAM used", &gpu.vram_used_mib, "MiB", 0);
-            if gpu.throttle.is_empty() {
-                println!("  Throttling   none");
-            } else {
-                println!("  Throttling");
-                for t in &gpu.throttle {
-                    println!(
-                        "    {}: {} episode(s), {} total, longest at {}",
-                        t.reason,
-                        t.episodes,
-                        fmt_time(t.seconds),
-                        fmt_time(t.longest_at_secs)
-                    );
+            if let Some(power) = &gpu.power_w {
+                print_series("Power draw", power, "W", 1);
+            }
+            print_series("Memory used", &gpu.mem_used_mib, "MiB", 0);
+            match &gpu.throttle {
+                None => println!("  Throttling   not reported by this GPU"),
+                Some(reasons) if reasons.is_empty() => println!("  Throttling   none"),
+                Some(reasons) => {
+                    println!("  Throttling");
+                    for t in reasons {
+                        println!(
+                            "    {}: {} episode(s), {} total, longest at {}",
+                            t.reason,
+                            t.episodes,
+                            fmt_time(t.seconds),
+                            fmt_time(t.longest_at_secs)
+                        );
+                    }
                 }
             }
         }
         _ => println!("GPU  not recorded"),
+    }
+
+    if let Some(second) = &s.gpu2 {
+        println!();
+        println!(
+            "Second GPU  {}",
+            second.name.as_deref().unwrap_or("unknown")
+        );
+        print_series("Utilisation", &second.util_pct, "%", 0);
+        print_series("Memory used", &second.mem_used_mib, "MiB", 0);
     }
 
     println!();
@@ -549,15 +650,17 @@ mod tests {
                 per_core_usage: vec![usage, usage],
             },
             gpu: Some(GpuSample {
-                temp_c: gpu_temp,
-                core_mhz: 2500,
-                mem_mhz: 8000,
-                util_pct: 97,
-                mem_util_pct: 60,
-                power_w: 110.0,
-                vram_used_mib: 6000,
-                throttle: throttle.iter().map(|s| s.to_string()).collect(),
+                temp_c: Some(gpu_temp),
+                core_mhz: Some(2400),
+                mem_mhz: Some(8000),
+                util_pct: 95,
+                mem_util_pct: Some(50),
+                power_w: Some(100.0),
+                vram_used_mib: 4000,
+                throttle: Some(throttle.iter().map(|t| t.to_string()).collect()),
+                ..Default::default()
             }),
+            gpu2: None,
             cpu_temp_c: Some(70.0 + i as f32),
             ram_used_mib: 12_000 + i as u64,
             fans: Vec::new(),
@@ -574,6 +677,8 @@ mod tests {
                 ram_total_mib: Some(16_003),
                 gpu_name: Some("test gpu".into()),
                 vram_total_mib: Some(8192),
+                gpu_source: None,
+                gpu2_name: None,
                 cpu_temp_source: Some("test".into()),
                 game: None,
             },
@@ -600,8 +705,9 @@ mod tests {
         samples[42] = sample(42, 87, &[], 20.0, 4000);
         let summary = analyze(&session(samples)).unwrap();
         let gpu = summary.gpu.unwrap();
-        assert_eq!(gpu.temp_c.peak, 87.0);
-        assert_eq!(gpu.temp_c.peak_at_secs, 42);
+        let temp = gpu.temp_c.unwrap();
+        assert_eq!(temp.peak, 87.0);
+        assert_eq!(temp.peak_at_secs, 42);
     }
 
     #[test]
@@ -618,7 +724,7 @@ mod tests {
             })
             .collect();
         let summary = analyze(&session(samples)).unwrap();
-        let throttle = &summary.gpu.unwrap().throttle;
+        let throttle = summary.gpu.unwrap().throttle.unwrap();
         assert_eq!(throttle.len(), 1);
         assert_eq!(throttle[0].reason, thermal);
         assert_eq!(throttle[0].episodes, 2);
@@ -657,12 +763,82 @@ mod tests {
 
     #[test]
     fn verdict_levels() {
-        assert_eq!(verdict_level(1, 0, 0, Some(70.0), true), "bad");
-        assert_eq!(verdict_level(0, 2, 0, Some(70.0), true), "warn");
-        assert_eq!(verdict_level(0, 0, 1, None, true), "warn");
-        assert_eq!(verdict_level(0, 0, 0, Some(86.0), false), "warn");
-        assert_eq!(verdict_level(0, 0, 0, Some(70.0), true), "good");
-        assert_eq!(verdict_level(0, 0, 0, None, true), "good");
+        assert_eq!(verdict_level(1, 0, 0, Some(70.0), true, true), "bad");
+        assert_eq!(verdict_level(0, 2, 0, Some(70.0), true, true), "warn");
+        assert_eq!(verdict_level(0, 0, 1, None, true, true), "warn");
+        assert_eq!(verdict_level(0, 0, 0, Some(86.0), false, true), "warn");
+        assert_eq!(verdict_level(0, 0, 0, Some(70.0), true, true), "good");
+        assert_eq!(verdict_level(0, 0, 0, None, true, true), "good");
+    }
+
+    #[test]
+    fn a_gpu_that_cannot_report_throttling_is_never_called_clean() {
+        // The quiet session on an integrated GPU: the CPU check ran and
+        // found nothing, but the GPU cannot say whether it slowed down, so
+        // the verdict must not read "no throttling detected".
+        assert_eq!(verdict_level(0, 0, 0, None, true, false), "na");
+        assert_eq!(verdict_level(0, 0, 0, Some(70.0), true, false), "na");
+        // What it *can* see is still reported.
+        assert_eq!(verdict_level(0, 0, 1, None, true, false), "warn");
+        assert_eq!(verdict_level(0, 0, 0, Some(86.0), true, false), "warn");
+
+        let summary = quiet_summary(None);
+        let (class, text) = verdict(&summary);
+        assert_eq!(class, "na");
+        assert!(text.contains("does not tell Windows"), "{text}");
+        assert!(!text.contains("no throttling"), "{text}");
+
+        // The same session on a GPU that does report throttling, and
+        // reported none, is allowed to say so. (It still reports no
+        // temperature, so the wording is about slowdowns, not heat.)
+        let summary = quiet_summary(Some(Vec::new()));
+        let (class, text) = verdict(&summary);
+        assert_eq!(class, "good");
+        assert_eq!(text, "No slowdowns detected.");
+    }
+
+    /// A calm session whose GPU either can or cannot report throttling.
+    fn quiet_summary(throttle: Option<Vec<Throttle>>) -> Summary {
+        let series = |v: f64| Series {
+            avg: v,
+            peak: v,
+            peak_at_secs: 0,
+        };
+        Summary {
+            started: chrono::Local::now(),
+            game: None,
+            interval_secs: 1,
+            duration_secs: 600,
+            sample_count: 600,
+            gpu_name: Some("Intel(R) Iris(R) Xe Graphics".into()),
+            cpu_name: "c".into(),
+            gpu: Some(GpuSummary {
+                temp_c: None,
+                core_mhz: None,
+                power_w: None,
+                util_pct: series(40.0),
+                mem_used_mib: series(1000.0),
+                throttle,
+            }),
+            gpu_source: Some("Windows".into()),
+            gpu2: None,
+            cpu: CpuSummary {
+                usage_pct: series(50.0),
+                max_core_mhz: series(4000.0),
+                throttle: Some(CpuThrottle {
+                    baseline_mhz: 4000,
+                    seconds: 0,
+                    episodes: 0,
+                    longest_at_secs: 0,
+                }),
+            },
+            cpu_temp: None,
+            cpu_temp_source: None,
+            ram_peak_mib: 1000,
+            ram_total_mib: None,
+            fan_rpm: None,
+            cooling: Cooling::Unknown,
+        }
     }
 
     #[test]
@@ -681,12 +857,12 @@ mod tests {
             gpu_name: Some("g".into()),
             cpu_name: "c".into(),
             gpu: Some(GpuSummary {
-                temp_c: series(80.0),
-                core_mhz: series(2000.0),
-                power_w: series(100.0),
+                temp_c: Some(series(80.0)),
+                core_mhz: Some(series(2000.0)),
+                power_w: Some(series(100.0)),
                 util_pct: series(95.0),
-                vram_used_mib: series(5000.0),
-                throttle: vec![
+                mem_used_mib: series(5000.0),
+                throttle: Some(vec![
                     // Dominant: 10 minutes of throttle around minute 5.
                     Throttle {
                         reason: "thermal limit (hardware)".into(),
@@ -701,8 +877,10 @@ mod tests {
                         episodes: 1,
                         longest_at_secs: 2400,
                     },
-                ],
+                ]),
             }),
+            gpu_source: None,
+            gpu2: None,
             cpu: CpuSummary {
                 usage_pct: series(50.0),
                 max_core_mhz: series(4000.0),
@@ -724,8 +902,8 @@ mod tests {
     fn quiet_session_is_not_declared_clean() {
         // An idle session gives the CPU check nothing to evaluate; that is
         // "could not check", not "all clear".
-        assert_eq!(verdict_level(0, 0, 0, None, false), "na");
-        assert_eq!(verdict_level(0, 0, 0, Some(55.0), false), "na");
+        assert_eq!(verdict_level(0, 0, 0, None, false, true), "na");
+        assert_eq!(verdict_level(0, 0, 0, Some(55.0), false, true), "na");
     }
 
     #[test]

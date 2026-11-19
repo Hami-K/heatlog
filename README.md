@@ -4,8 +4,9 @@
 
 A Windows app that records what your hardware is doing while you game, then
 tells you in plain language whether it throttled, when, and why. It watches
-GPU temperature, clocks, power and the driver's own throttle reasons, plus
-CPU usage, clocks and memory.
+the GPU - NVIDIA, Intel or AMD, including the integrated one beside a
+dedicated card - plus CPU usage, clocks, temperature, memory and fan
+speeds.
 
 Monitoring is read-only. heatlog talks to hardware sensors and the process
 list only: it never touches game processes, injects code, or draws overlays,
@@ -77,6 +78,38 @@ section. Long sessions are downsampled in a way that preserves spikes.
 
 <!-- SCREENSHOTS: add app and report screenshots here -->
 
+## Graphics cards
+
+heatlog reads whatever GPU the machine has, through whichever interface
+reports the most about it:
+
+- **NVIDIA** through NVML, NVIDIA's own management library — the same source
+  behind `nvidia-smi`. This reports temperature, clocks, power draw and, most
+  usefully, the driver's own **throttle reasons**, so heatlog can say *why*
+  the GPU slowed down rather than guessing.
+- **Intel and AMD, integrated or dedicated**, through Windows' own graphics
+  interfaces: the performance counters behind Task Manager's GPU tab for
+  utilisation and memory, and the kernel-mode thunk interface for the adapter
+  itself. No driver, no admin rights.
+
+What the second route cannot do is worth stating plainly: Windows exposes no
+clock speed, no power draw and **no throttle signal** for these GPUs, and
+most integrated GPUs report no temperature either. heatlog shows what it has
+and says "not reported" for the rest — it never prints a zero in place of a
+missing reading. Crucially, a report on such a GPU says that throttling could
+not be checked, instead of claiming there was none.
+
+On a laptop with **both** an integrated and a dedicated GPU, both are
+detected. The dedicated one is the main GPU (read through NVML where it is an
+NVIDIA card) and the integrated one appears beneath it on the GPU page, with
+its own figures; the two are never added together, and the same GPU is never
+listed twice.
+
+**Dedicated AMD GPUs are experimental**: that combination has never run on
+real hardware, so heatlog labels it as untested in the app rather than
+implying otherwise. Integrated AMD and Intel graphics are tested and part of
+this release.
+
 ## CPU temperature and fan speeds
 
 Windows has no unprivileged API for CPU temperature or fan speed, so heatlog
@@ -112,8 +145,9 @@ changes another app's settings for you. If Windows Firewall asks about
 LibreHardwareMonitor's network access, blocking it is fine: heatlog only
 reads from this PC.
 
-GPU temperature needs none of this: NVIDIA's own management library reports
-it directly.
+An NVIDIA GPU needs none of this: NVIDIA's own library reports its
+temperature directly. Intel and AMD GPUs usually report none at all - see
+above.
 
 ## Configuration
 
@@ -212,7 +246,7 @@ running on a 20-thread laptop CPU under Windows 11:
 
 | | CPU | Memory |
 |---|---|---|
-| `heatlog record` (command line) | 0.28% of one core | 19 MB |
+| `heatlog record` (command line) | 0.60% of one core | 19 MB |
 | the same, also recording which programs are busy | 0.94% of one core | 20 MB |
 | app in the background, which is where it sits while you game | 2.0% of one core | 145 MB |
 | app in the foreground with the window visible | 3.4% of one core | 145 MB |
@@ -228,14 +262,22 @@ so heatlog does it every few seconds rather than every second, which is
 plenty for explaining a slow stretch. Turning it off in Settings returns the
 recorder to the first row.
 
+Reading a GPU through Windows' performance counters is most of that first
+row: it was 0.28% of a core before that path existed, on a machine where the
+only GPU is an integrated one. An NVIDIA GPU is cheaper to read, because NVML
+answers directly rather than through a counter query.
+
 The WMI provider process that serves the performance-counter queries
 (WmiPrvSE) showed no measurable CPU increase.
 
 ## How it works
 
-- **GPU** - queried through NVML (the library behind `nvidia-smi`):
+- **GPU** - NVIDIA through NVML (the library behind `nvidia-smi`):
   temperature, core/memory clocks, utilisation, power draw, VRAM, and the
-  driver's own throttle reasons (thermal limit, power cap, ...).
+  driver's own throttle reasons (thermal limit, power cap, ...). Intel and
+  AMD through Windows' GPU performance counters and `D3DKMT` adapter
+  queries: utilisation and memory, matched to each adapter by its LUID the
+  way Task Manager does it, and whatever else the driver fills in.
 - **CPU clocks** - Windows' "Processor Information" performance counters, per
   core: percent-of-base-clock times each core's base frequency, the same
   calculation Task Manager shows. CPU usage and RAM come from the same

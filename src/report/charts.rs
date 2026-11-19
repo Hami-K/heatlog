@@ -41,7 +41,13 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
 
     let gpu_flags: Vec<bool> = samples
         .iter()
-        .map(|s| s.gpu.as_ref().is_some_and(|g| !g.throttle.is_empty()))
+        .map(|s| {
+            s.gpu.as_ref().is_some_and(|g| {
+                g.throttle
+                    .as_ref()
+                    .is_some_and(|reasons| !reasons.is_empty())
+            })
+        })
         .collect();
     let gpu_bands = regions(&gpu_flags, &xs, summary.interval_secs as f64);
     let cpu_bands = cpu_throttle_flags(samples)
@@ -78,7 +84,7 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
                 &gpu_bands,
                 gpu_shaded,
             ),
-            points: pick(&|s| s.gpu.as_ref().map(|g| f64::from(g.temp_c))),
+            points: pick(&|s| s.gpu.as_ref().and_then(|g| g.temp_c).map(f64::from)),
             bands: gpu_bands.clone(),
             band_class: "gpu",
             y: YAxis::Temp { hot_from: 85.0 },
@@ -91,7 +97,12 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
                 &gpu_bands,
                 gpu_shaded,
             ),
-            points: pick(&|s| s.gpu.as_ref().map(|g| f64::from(g.core_mhz) / 1000.0)),
+            points: pick(&|s| {
+                s.gpu
+                    .as_ref()
+                    .and_then(|g| g.core_mhz)
+                    .map(|mhz| f64::from(mhz) / 1000.0)
+            }),
             bands: gpu_bands.clone(),
             band_class: "gpu",
             y: YAxis::FromZero,
@@ -104,10 +115,23 @@ pub fn build(session: &Session, summary: &Summary) -> Vec<ChartData> {
                 &gpu_bands,
                 gpu_shaded,
             ),
-            points: pick(&|s| s.gpu.as_ref().map(|g| g.power_w)),
+            points: pick(&|s| s.gpu.as_ref().and_then(|g| g.power_w)),
             bands: gpu_bands.clone(),
             band_class: "gpu",
             y: YAxis::FromZero,
+        },
+        ChartData {
+            title: "GPU usage",
+            unit: "%",
+            explain: explain(
+                "How much of the graphics chip is in use, from 0 to 100%.",
+                &gpu_bands,
+                gpu_shaded,
+            ),
+            points: pick(&|s| s.gpu.as_ref().map(|g| f64::from(g.util_pct))),
+            bands: gpu_bands.clone(),
+            band_class: "gpu",
+            y: YAxis::Pct,
         },
         ChartData {
             title: "CPU usage",

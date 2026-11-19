@@ -23,6 +23,13 @@ pub struct SessionMeta {
     pub ram_total_mib: Option<u64>,
     pub gpu_name: Option<String>,
     pub vram_total_mib: Option<u64>,
+    /// Which interface the GPU readings came from ("NVML", "Windows"), so
+    /// a report can say what the numbers could and could not include.
+    #[serde(default)]
+    pub gpu_source: Option<String>,
+    /// The second GPU, on a machine that has one.
+    #[serde(default)]
+    pub gpu2_name: Option<String>,
     pub cpu_temp_source: Option<String>,
     pub game: Option<String>,
 }
@@ -38,6 +45,10 @@ pub struct Sample {
     // Added after the first releases. Serde reads a missing list as empty
     // and writes nothing when there is nothing, so old and new files stay
     // readable by old and new versions alike.
+    /// The second GPU's reading, kept apart from the main one's rather
+    /// than added into it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub gpu2: Option<GpuSample>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fans: Vec<Fan>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -53,6 +64,7 @@ impl Sample {
         at: DateTime<Utc>,
         cpu: CpuSnapshot,
         gpu: Option<GpuSample>,
+        gpu2: Option<GpuSample>,
         reading: Reading,
         top_procs: Vec<ProcSample>,
     ) -> Self {
@@ -61,6 +73,7 @@ impl Sample {
             ram_used_mib: cpu.ram_used_mib,
             cpu: cpu.sample,
             gpu,
+            gpu2,
             cpu_temp_c: reading.cpu_temp_c,
             fans: reading.fans,
             top_procs,
@@ -288,6 +301,8 @@ mod tests {
             ram_total_mib: None,
             gpu_name: None,
             vram_total_mib: None,
+            gpu_source: None,
+            gpu2_name: None,
             cpu_temp_source: None,
             game: None,
         }
@@ -302,6 +317,7 @@ mod tests {
                 per_core_usage: vec![10.0],
             },
             gpu: None,
+            gpu2: None,
             cpu_temp_c: None,
             ram_used_mib: 1,
             fans: Vec::new(),

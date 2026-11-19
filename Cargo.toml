@@ -23,5 +23,5 @@ sysinfo = "0.33"
 toml = "0.8"
 trash = "5"
 ureq = "2"
-windows = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Memory", "Win32_UI_Shell"] }
+windows = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Console", "Win32_System_Memory", "Win32_UI_Shell", "Wdk_Graphics_Direct3D"] }
 wmi = "0.14"

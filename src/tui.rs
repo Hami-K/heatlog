@@ -56,7 +56,11 @@ impl Tui {
         file: &str,
     ) -> Result<()> {
         if let Some(gpu) = &sample.gpu {
-            push_capped(&mut self.gpu_temp, u64::from(gpu.temp_c));
+            // A GPU with no temperature leaves that sparkline empty
+            // rather than drawing a flat zero.
+            if let Some(temp) = gpu.temp_c {
+                push_capped(&mut self.gpu_temp, u64::from(temp));
+            }
             push_capped(&mut self.gpu_util, u64::from(gpu.util_pct));
         }
         push_capped(&mut self.cpu_usage, sample.cpu.usage_pct as u64);
@@ -94,10 +98,11 @@ impl Tui {
 
             match &sample.gpu {
                 Some(gpu) => {
-                    let throttle = if gpu.throttle.is_empty() {
-                        String::new()
-                    } else {
-                        format!("  THROTTLE: {}", gpu.throttle.join(", "))
+                    let throttle = match &gpu.throttle {
+                        Some(reasons) if !reasons.is_empty() => {
+                            format!("  THROTTLE: {}", reasons.join(", "))
+                        }
+                        _ => String::new(),
                     };
                     let [left, right] =
                         Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
@@ -105,10 +110,14 @@ impl Tui {
                     spark(
                         frame,
                         left,
-                        format!(
-                            "GPU {} °C  {} MHz  {:.0} W{throttle}",
-                            gpu.temp_c, gpu.core_mhz, gpu.power_w
-                        ),
+                        // Only the figures this GPU reports, so an
+                        // integrated one shows its usage rather than zeros.
+                        match (gpu.temp_c, gpu.core_mhz, gpu.power_w) {
+                            (Some(temp), Some(mhz), Some(watts)) => {
+                                format!("GPU {temp} °C  {mhz} MHz  {watts:.0} W{throttle}")
+                            }
+                            _ => format!("GPU {}% used{throttle}", gpu.util_pct),
+                        },
                         gpu_temp,
                         None,
                     );
