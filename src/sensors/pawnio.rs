@@ -88,7 +88,7 @@ pub fn installed_version() -> Option<String> {
 /// stand. No module is loaded, so this is cheap enough for the setup page
 /// to ask every few seconds.
 pub fn probe() -> Result<(), OpenError> {
-    Executor::open(Lib::load()?).map(|_| ())
+    Executor::open(Lib::get()?).map(|_| ())
 }
 
 type OpenFn = unsafe extern "system" fn(*mut isize) -> i32;
@@ -107,6 +107,7 @@ type CloseFn = unsafe extern "system" fn(isize) -> i32;
 /// PawnIOLib.dll, loaded from the install at run time. heatlog neither
 /// bundles nor links against it, which is what keeps heatlog MIT beside
 /// PawnIO's own licence.
+#[derive(Clone, Copy)]
 struct Lib {
     open: OpenFn,
     load: LoadFn,
@@ -114,7 +115,21 @@ struct Lib {
     close: CloseFn,
 }
 
+static LIB: std::sync::OnceLock<Lib> = std::sync::OnceLock::new();
+
 impl Lib {
+    /// The library, loaded at most once per run. Only success is
+    /// remembered: someone who installs PawnIO while heatlog is open
+    /// should not have to restart it.
+    fn get() -> Result<Self, OpenError> {
+        if let Some(lib) = LIB.get() {
+            return Ok(*lib);
+        }
+        let lib = Self::load()?;
+        let _ = LIB.set(lib);
+        Ok(lib)
+    }
+
     fn load() -> Result<Self, OpenError> {
         let dll = library_path().ok_or(OpenError::NotInstalled)?;
         let wide: Vec<u16> = OsStr::new(&dll)
@@ -260,7 +275,7 @@ pub struct PawnIoTemp {
 /// module refuses the wrong vendor itself, so there is no CPU detection
 /// here to get wrong.
 pub fn detect() -> Result<PawnIoTemp, OpenError> {
-    let intel = Executor::open(Lib::load()?)?;
+    let intel = Executor::open(Lib::get()?)?;
     if cached_module(INTEL_MODULE).is_ok_and(|blob| intel.load(&blob)) {
         let tjmax = intel
             .read_msr(MSR_TEMPERATURE_TARGET)
@@ -283,7 +298,7 @@ pub fn detect() -> Result<PawnIoTemp, OpenError> {
     }
     drop(intel);
 
-    let amd = Executor::open(Lib::load()?)?;
+    let amd = Executor::open(Lib::get()?)?;
     if cached_module(AMD_MODULE).is_ok_and(|blob| amd.load(&blob))
         && amd.read_smn(SMN_CUR_TEMP).ok().and_then(tctl_of).is_some()
     {

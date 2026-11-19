@@ -265,8 +265,9 @@ pub fn refresh(cfg: &Config) -> Status {
     };
     let status = decide(&facts, cfg.pawnio_if_heatlog_unmaintained);
     // Fetch the official modules here, on this background thread, so the
-    // first reading never waits for a download.
-    if status.usable {
+    // first reading never waits for a download - but only where they
+    // could actually be used, which means heatlog is elevated.
+    if status.usable && crate::sensors::pawnio::probe().is_ok() {
         let _ = crate::sensors::pawnio::ensure_modules();
     }
     // An offline check must not throw away a good cached verdict: only a
