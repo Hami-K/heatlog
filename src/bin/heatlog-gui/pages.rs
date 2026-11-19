@@ -77,12 +77,28 @@ fn stat_grid(ui: &mut egui::Ui, id: &str, stats: &[(&str, String)]) {
         });
 }
 
+/// What to put in the Fan speed row. A laptop whose temperature comes
+/// from LibreHardwareMonitor usually has no fan sensors there at all - LHM
+/// reads fans off a Super I/O chip that laptops do not have - so the row
+/// says where to look instead of showing nothing.
+fn fan_speed_text(rpm: Option<u32>, source: Option<&str>) -> String {
+    match (rpm, source) {
+        (Some(rpm), _) => format!("{rpm} rpm"),
+        (None, Some("LibreHardwareMonitor")) => {
+            "not reported by LibreHardwareMonitor on this laptop - try HWiNFO".to_string()
+        }
+        (None, Some(source)) => format!("not reported by {source}"),
+        (None, None) => "unavailable - see Settings".to_string(),
+    }
+}
+
 pub fn cpu(ui: &mut egui::Ui, app: &App) {
     let name = app
         .info
         .as_ref()
         .map(|i| i.cpu_name.clone())
         .unwrap_or_else(|| "CPU".to_string());
+    let source = app.info.as_ref().and_then(|i| i.cpu_temp_source);
     ui.heading(format!("{}  {name}", icons::CPU));
     ui.add_space(6.0);
     live_plot(ui, "cpu", &app.hist.cpu_pct, Some(100.0), |v| {
@@ -101,9 +117,7 @@ pub fn cpu(ui: &mut egui::Ui, app: &App) {
             ),
         ));
         stats.push(("Logical processors", s.cpu.per_core_mhz.len().to_string()));
-        if let Some(rpm) = s.fastest_fan() {
-            stats.push(("Fan speed", format!("{rpm} rpm")));
-        }
+        stats.push(("Fan speed", fan_speed_text(s.fastest_fan(), source)));
         match s.cpu_temp_c {
             Some(t) => stats.push(("Temperature", format!("{t:.0} °C"))),
             None => stats.push(("Temperature", "unavailable - see Settings".to_string())),
@@ -569,16 +583,18 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
     ui.add_space(6.0);
 
     // Copied out rather than borrowed: the cards below need &mut app.
-    let (hwinfo_sharing, hwinfo_running, lhm_web, lhm_running, lhm_path) = match &app.info {
-        Some(info) => (
-            info.avail.hwinfo_sharing,
-            info.avail.hwinfo_running,
-            info.avail.lhm_web,
-            info.avail.lhm_running,
-            info.avail.lhm_path.clone(),
-        ),
-        None => (false, false, false, false, None),
-    };
+    let (hwinfo_sharing, hwinfo_running, lhm_web, lhm_running, lhm_path, hwinfo_path) =
+        match &app.info {
+            Some(info) => (
+                info.avail.hwinfo_sharing,
+                info.avail.hwinfo_running,
+                info.avail.lhm_web,
+                info.avail.lhm_running,
+                info.avail.lhm_path.clone(),
+                info.avail.hwinfo_path.clone(),
+            ),
+            None => (false, false, false, false, None, None),
+        };
     if let Some(source) = app.info.as_ref().and_then(|i| i.cpu_temp_source) {
         card(ui, |ui| {
             ui.label(
@@ -692,8 +708,13 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
                 ))
                 .color(AMBER),
             );
+        } else if hwinfo_path.is_some() {
+            ui.label(
+                RichText::new(format!("{}  Installed, but not running.", icons::WARNING))
+                    .color(AMBER),
+            );
         } else {
-            ui.label(RichText::new("Not running.").weak());
+            ui.label(RichText::new("Not installed.").weak());
         }
         ui.add_space(4.0);
         ui.label(
@@ -705,9 +726,10 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
             .small(),
         );
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(!app.installing, |ui| {
+            ui.add_enabled_ui(!app.installing && hwinfo_path.is_none(), |ui| {
                 if ui
                     .button(format!("{}  Install HWiNFO", icons::DOWNLOAD_SIMPLE))
+                    .on_disabled_hover_text("Already installed")
                     .clicked()
                 {
                     app.start_hwinfo_install();
@@ -754,9 +776,16 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
     });
     ui.add_space(10.0);
 
+    ui.label(
+        RichText::new("This page checks again by itself every few seconds.")
+            .weak()
+            .small(),
+    );
+    ui.add_space(4.0);
     ui.horizontal(|ui| {
         if ui
             .button(format!("{}  Check again", icons::ARROWS_CLOCKWISE))
+            .on_hover_text("Looks for both apps again, running or newly installed")
             .clicked()
         {
             app.send(worker::Cmd::Reprobe);

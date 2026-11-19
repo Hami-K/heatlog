@@ -95,10 +95,20 @@ looks for these in order, and keeps working without either:
    its settings, and leave it running. The free version switches that option
    off again after 12 hours; heatlog says so when it happens.
 
+Temperature and fan speed are sourced separately, because the two apps see
+different things. LibreHardwareMonitor reads fans off a Super I/O chip,
+which most laptops do not have, so on a laptop it often reports a CPU
+temperature and no fans at all; HWiNFO asks the embedded controller and
+usually does report them. heatlog takes the temperature from the first
+source that has one and the fan speeds from whichever source has those,
+even if that is the other app. When neither does, the CPU page says so
+instead of showing nothing.
+
 The app's Settings page has an **Open setup** button that detects which of
 these is installed or running, installs HWiNFO through winget, offers to
-start LibreHardwareMonitor, and re-checks. heatlog never changes another
-app's settings for you. If Windows Firewall asks about
+start LibreHardwareMonitor, and re-checks - by itself, every few seconds,
+while that page is open, so nothing ever needs a restart. heatlog never
+changes another app's settings for you. If Windows Firewall asks about
 LibreHardwareMonitor's network access, blocking it is fine: heatlog only
 reads from this PC.
 

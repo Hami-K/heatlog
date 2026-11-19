@@ -56,6 +56,26 @@ pub fn detect(lhm_url: &str) -> Option<Box<dyn CpuTempSource>> {
     None
 }
 
+/// Returns a source for fan speeds alone, for when the temperature source
+/// reports no fans. Laptops are the common case: LibreHardwareMonitor
+/// reads fans off a Super I/O chip that laptops do not have, while HWiNFO
+/// asks the embedded controller the way the laptop maker's own app does.
+/// `temp_label` is skipped, having already been asked.
+pub fn detect_fans(lhm_url: &str, temp_label: Option<&str>) -> Option<Box<dyn CpuTempSource>> {
+    if temp_label != Some("HWiNFO") && HwInfoShm.read_all().is_ok_and(|r| !r.fans.is_empty()) {
+        return Some(Box::new(HwInfoShm));
+    }
+    if temp_label != Some("LibreHardwareMonitor") {
+        let mut lhm = LhmWebServer {
+            url: lhm_url.to_string(),
+        };
+        if lhm.read().is_ok_and(|r| !r.fans.is_empty()) {
+            return Some(Box::new(lhm));
+        }
+    }
+    None
+}
+
 /// What the setup page needs to tell the user where they stand.
 pub struct Availability {
     pub source: Option<&'static str>,
@@ -67,6 +87,9 @@ pub struct Availability {
     /// Its winget package is portable, so there is no Start menu entry to
     /// point the user at.
     pub lhm_path: Option<PathBuf>,
+    /// Where HWiNFO is installed, so a fresh install is noticed without a
+    /// restart.
+    pub hwinfo_path: Option<PathBuf>,
 }
 
 pub fn availability(lhm_url: &str) -> Availability {
@@ -100,26 +123,53 @@ pub fn availability(lhm_url: &str) -> Availability {
         lhm_running: running("librehardwaremonitor"),
         lhm_web,
         lhm_path: find_lhm(&sys),
+        hwinfo_path: find_hwinfo(&sys),
     }
 }
 
-/// Looks for LibreHardwareMonitor: first by asking a running copy where it
-/// came from, then in the places its installers put it (the winget package
-/// is portable and lands in a versioned folder).
-fn find_lhm(sys: &System) -> Option<PathBuf> {
-    let running = sys
-        .processes()
+/// Looks for HWiNFO the same way: a running copy knows its own path, and
+/// its installer puts it in Program Files under a name that depends on the
+/// bitness.
+fn find_hwinfo(sys: &System) -> Option<PathBuf> {
+    if let Some(running) = running_exe(sys, "hwinfo") {
+        return Some(running);
+    }
+    for var in ["ProgramFiles", "ProgramFiles(x86)"] {
+        let Some(dir) = std::env::var_os(var) else {
+            continue;
+        };
+        for folder in ["HWiNFO64", "HWiNFO32", "HWiNFO"] {
+            for exe in ["HWiNFO64.exe", "HWiNFO32.exe"] {
+                let path = PathBuf::from(&dir).join(folder).join(exe);
+                if path.is_file() {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+/// The path of a running process whose name starts with `prefix`.
+fn running_exe(sys: &System, prefix: &str) -> Option<PathBuf> {
+    sys.processes()
         .values()
         .find(|process| {
             process
                 .name()
                 .to_string_lossy()
                 .to_ascii_lowercase()
-                .starts_with("librehardwaremonitor")
+                .starts_with(prefix)
         })
-        .and_then(|process| process.exe().map(Path::to_path_buf));
-    if running.is_some() {
-        return running;
+        .and_then(|process| process.exe().map(Path::to_path_buf))
+}
+
+/// Looks for LibreHardwareMonitor: first by asking a running copy where it
+/// came from, then in the places its installers put it (the winget package
+/// is portable and lands in a versioned folder).
+fn find_lhm(sys: &System) -> Option<PathBuf> {
+    if let Some(running) = running_exe(sys, "librehardwaremonitor") {
+        return Some(running);
     }
 
     let mut roots = Vec::new();

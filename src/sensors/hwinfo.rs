@@ -27,6 +27,13 @@ impl HwInfoShm {
     pub fn available() -> bool {
         read_block().is_ok_and(|block| parse(&block).cpu_temp_c.is_some())
     }
+
+    /// Everything HWiNFO is sharing, whether or not a CPU temperature is
+    /// among it: `read` insists on the temperature, but HWiNFO is also
+    /// worth asking for fans alone.
+    pub fn read_all(&self) -> Result<Reading> {
+        Ok(parse(&read_block()?))
+    }
 }
 
 impl CpuTempSource for HwInfoShm {
@@ -35,10 +42,9 @@ impl CpuTempSource for HwInfoShm {
     }
 
     fn read(&mut self) -> Result<Reading> {
-        let block = read_block()?;
-        let reading = parse(&block);
-        if reading.cpu_temp_c.is_none() {
-            bail!("no CPU temperature among HWiNFO's sensors");
+        let reading = self.read_all()?;
+        if reading.cpu_temp_c.is_none() && reading.fans.is_empty() {
+            bail!("no CPU temperature or fan among HWiNFO's sensors");
         }
         Ok(reading)
     }

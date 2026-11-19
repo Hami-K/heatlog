@@ -24,6 +24,10 @@ pub struct Sensors {
     gpu_info: Option<GpuInfo>,
     cpu: CpuSensor,
     temp_source: Option<Box<dyn CpuTempSource>>,
+    /// A second source, asked for fan speeds only when the temperature
+    /// source reports none (laptops, where LibreHardwareMonitor sees no
+    /// fan chip but HWiNFO reads the embedded controller).
+    fan_source: Option<Box<dyn CpuTempSource>>,
     /// None when the user has turned process recording off.
     processes: Option<ProcessWatch>,
     cpu_name: String,
@@ -37,13 +41,15 @@ impl Sensors {
         let gpu = GpuSensor::new().ok();
         let gpu_info = gpu.as_ref().and_then(|g| g.info().ok());
         let mut cpu = CpuSensor::new();
-        let temp_source = cpu_temp::detect(lhm_url);
+        let mut temp_source = cpu_temp::detect(lhm_url);
+        let fan_source = fan_source_for(lhm_url, &mut temp_source);
         let first_read = cpu.read();
         Self {
             gpu,
             gpu_info,
             cpu,
             temp_source,
+            fan_source,
             processes: record_processes.then(ProcessWatch::new),
             cpu_name: first_read.name,
             ram_total_mib: first_read.ram_total_mib,
@@ -74,6 +80,13 @@ impl Sensors {
     /// configured one.
     pub fn reprobe_temp(&mut self, lhm_url: &str) {
         self.temp_source = cpu_temp::detect(lhm_url);
+        self.fan_source = fan_source_for(lhm_url, &mut self.temp_source);
+    }
+
+    /// Which app the fan speeds come from, when it is not the temperature
+    /// source.
+    pub fn fan_source(&self) -> Option<&'static str> {
+        self.fan_source.as_ref().map(|s| s.label())
     }
 
     /// Reads all sensors once. Call at the sampling interval; shorter gaps
@@ -81,11 +94,16 @@ impl Sensors {
     pub fn read_sample(&mut self) -> Sample {
         let cpu_snap = self.cpu.read();
         let gpu_snap = self.gpu.as_ref().and_then(|g| g.read().ok());
-        let reading = self
+        let mut reading = self
             .temp_source
             .as_mut()
             .and_then(|source| source.read().ok())
             .unwrap_or_default();
+        if reading.fans.is_empty() {
+            if let Some(fans) = self.fan_source.as_mut().and_then(|s| s.read().ok()) {
+                reading.fans = fans.fans;
+            }
+        }
         let top_procs = self
             .processes
             .as_mut()
@@ -106,6 +124,24 @@ impl Sensors {
             game,
         }
     }
+}
+
+/// A fan source is only worth probing when the temperature source has no
+/// fans of its own: a second app is a second thing the user has to keep
+/// running.
+fn fan_source_for(
+    lhm_url: &str,
+    temp: &mut Option<Box<dyn CpuTempSource>>,
+) -> Option<Box<dyn CpuTempSource>> {
+    let label = temp.as_ref().map(|s| s.label());
+    let temp_has_fans = temp
+        .as_mut()
+        .and_then(|source| source.read().ok())
+        .is_some_and(|reading| !reading.fans.is_empty());
+    if temp_has_fans {
+        return None;
+    }
+    cpu_temp::detect_fans(lhm_url, label)
 }
 
 pub struct Recorder {
