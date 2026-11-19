@@ -101,7 +101,12 @@ fn run(ctx: egui::Context, cmds: Receiver<Cmd>, events: Sender<Event>) {
         .sessions_dir()
         .unwrap_or_else(|_| PathBuf::from("sessions"));
 
-    let mut sensors = Sensors::init(&cfg.lhm_url, cfg.record_processes);
+    // Checks published advisories and heatlog's own blocked-version
+    // list for the installed PawnIO driver. On the network, so never on
+    // the way to the first sample: whatever the last check decided is
+    // what this run starts with.
+    heatlog::driver_safety::refresh_in_background(&cfg);
+    let mut sensors = Sensors::init(&cfg);
     let info = |sensors: &Sensors, cfg: &Config| {
         Event::Ready(Box::new(Info {
             cpu_name: sensors.cpu_name().to_string(),
@@ -111,7 +116,7 @@ fn run(ctx: egui::Context, cmds: Receiver<Cmd>, events: Sender<Event>) {
             cpu_temp_source: sensors.cpu_temp_source(),
             games: cfg.games.clone(),
             interval_secs: cfg.interval_secs.max(1),
-            avail: cpu_temp::availability(&cfg.lhm_url),
+            avail: cpu_temp::availability(cfg),
         }))
     };
     send(info(&sensors, &cfg));
@@ -149,7 +154,12 @@ fn run(ctx: egui::Context, cmds: Receiver<Cmd>, events: Sender<Event>) {
                 Ok(Cmd::Stop) => stop_recording(&mut recording, &send),
                 Ok(Cmd::SetAuto(enabled)) => auto = enabled,
                 Ok(Cmd::Reprobe) => {
-                    sensors.reprobe_temp(&cfg.lhm_url);
+                    // Settings may have just changed which source to
+                    // use, or which to leave alone.
+                    if let Ok(fresh) = heatlog::config::load_or_create() {
+                        cfg = fresh;
+                    }
+                    sensors.reprobe_temp(&cfg);
                     temp_worked = false;
                     hinted = false;
                     send(info(&sensors, &cfg));
@@ -169,9 +179,16 @@ fn run(ctx: egui::Context, cmds: Receiver<Cmd>, events: Sender<Event>) {
 
         // Someone starting HWiNFO or LibreHardwareMonitor should not have
         // to come back and press a button: look again now and then until a
-        // source turns up.
-        if sensors.cpu_temp_source().is_none() && tick.is_multiple_of(15) {
-            sensors.reprobe_temp(&cfg.lhm_url);
+        // source turns up. The same applies to the driver-safety check
+        // that runs in the background at start-up: when it clears PawnIO,
+        // heatlog moves to the better source on its own.
+        let pinned = cfg.temp_source.trim().to_ascii_lowercase();
+        let could_do_better = sensors.cpu_temp_source().is_none()
+            || (sensors.cpu_temp_source() != Some("PawnIO")
+                && matches!(pinned.as_str(), "" | "auto" | "pawnio")
+                && heatlog::driver_safety::status(&cfg).usable);
+        if could_do_better && tick.is_multiple_of(15) {
+            sensors.reprobe_temp(&cfg);
             if sensors.cpu_temp_source().is_some() {
                 send(info(&sensors, &cfg));
             }

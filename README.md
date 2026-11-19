@@ -112,16 +112,33 @@ this release.
 
 ## CPU temperature and fan speeds
 
-Windows has no unprivileged API for CPU temperature or fan speed, so heatlog
-borrows them from a monitoring app that already ships a signed driver. It
-looks for these in order, and keeps working without either:
+Windows has no unprivileged API for CPU temperature or fan speed. heatlog
+can read the temperature from the CPU itself through the PawnIO driver, or
+borrow it from a monitoring app that already ships a signed driver. It looks
+for these in order, and keeps working without any of them:
 
-1. **LibreHardwareMonitor** (recommended) through its web server
+1. **PawnIO** (recommended), which reads the temperature the CPU reports
+   about itself - no other program has to be running. Install it from the
+   app's setup page or with `winget install --id namazso.PawnIO -e`; Windows
+   asks for admin permission once, because it installs a driver.
+
+   **heatlog has to be running as administrator to use it.** PawnIO's device
+   is open to administrators alone - that is set in PawnIO's own installer,
+   deliberately, because the driver can read any machine register - so an
+   ordinary heatlog run cannot reach it. heatlog never asks you to elevate
+   and never installs a privileged helper of its own: start it normally and
+   it uses one of the apps below; right-click it and choose **Run as
+   administrator** and it reads the CPU directly. Nothing is ever written:
+   heatlog loads PawnIO's own signed Intel and AMD modules and reads
+   temperature registers, and no module that can write anything is loaded.
+   Fan speeds still come from the apps below, since PawnIO's official
+   modules have nothing for laptop fans.
+2. **LibreHardwareMonitor** through its web server
    (`winget install LibreHardwareMonitor.LibreHardwareMonitor`, then
    Options > Remote Web Server > Run). The package is portable: it adds no
    Start menu entry and must run as administrator, so heatlog finds it and
    offers to start it for you.
-2. **HWiNFO** through its shared-memory interface. Install it with
+3. **HWiNFO** through its shared-memory interface. Install it with
    `winget install --id REALiX.HWiNFO -e`, or from
    [hwinfo.com](https://www.hwinfo.com/download/) if winget's download
    fails; start it in sensors-only mode, tick **Shared Memory Support** in
@@ -137,10 +154,14 @@ source that has one and the fan speeds from whichever source has those,
 even if that is the other app. When neither does, the CPU page says so
 instead of showing nothing.
 
+You can pin one source in Settings (or `temp_source` in the config file):
+`auto` uses the best one available, or name `pawnio`,
+`librehardwaremonitor` or `hwinfo` and heatlog uses only that one.
+
 The app's Settings page has an **Open setup** button that detects which of
-these is installed or running, installs HWiNFO through winget, offers to
-start LibreHardwareMonitor, and re-checks - by itself, every few seconds,
-while that page is open, so nothing ever needs a restart. heatlog never
+these is installed or running, installs PawnIO or HWiNFO through winget,
+offers to start LibreHardwareMonitor, and re-checks - by itself, every few
+seconds, while that page is open, so nothing ever needs a restart. heatlog never
 changes another app's settings for you. If Windows Firewall asks about
 LibreHardwareMonitor's network access, blocking it is fine: heatlog only
 reads from this PC.
@@ -148,6 +169,43 @@ reads from this PC.
 An NVIDIA GPU needs none of this: NVIDIA's own library reports its
 temperature directly. Intel and AMD GPUs usually report none at all - see
 above.
+
+## Is that driver still safe?
+
+A kernel driver that is safe today can become a liability tomorrow: a hole
+is found, Microsoft adds it to the vulnerable-driver blocklist, or the
+version on your PC is simply left behind. heatlog therefore checks before it
+reads anything through PawnIO, and the checks lean on sources other people
+keep up to date - they have to keep working even if heatlog itself stops
+being maintained:
+
+- **Windows.** A blocklisted driver does not load, and heatlog notices that
+  it cannot open the device and says so in plain words.
+- **Published advisories.** heatlog searches the NVD's CVE database for
+  advisories naming PawnIO. Any match disables the driver until the advisory
+  is ruled out in the list below. (GitHub's advisory database cannot help
+  here: it is indexed by software-package ecosystem, and a Windows driver
+  belongs to none of them.)
+- **PawnIO's own releases.** A newer version gets a one-click
+  **Update PawnIO** button.
+- **A dead man's switch.** If heatlog's own newest release is more than a
+  year old, heatlog assumes nobody is looking after it, stops using PawnIO
+  and says why - LibreHardwareMonitor is maintained and keeps PawnIO up to
+  date. A setting takes that decision back.
+- **[`driver-safety.json`](driver-safety.json)** in this repository, read
+  from a URL that will never change. It lists blocked versions with a reason
+  each, the oldest version heatlog will talk to, and advisories already
+  ruled out. Blocking a version needs an edit to that file, not a release.
+  Its `format` number guards it: a heatlog that does not recognise the
+  format stops using PawnIO rather than guessing.
+
+Every answer fails safe. Anything blocked, unknown, unreadable or never yet
+checked means heatlog falls back to LibreHardwareMonitor or HWiNFO, with the
+reason on the CPU page and the setup page, and only the PawnIO source is
+ever switched off - heatlog itself keeps running and recording. An offline
+PC keeps using the last answer for a day. This is not the update check:
+turning update checks off leaves the safety check on, and turning the safety
+check off means heatlog never uses PawnIO at all.
 
 ## Configuration
 
@@ -160,6 +218,13 @@ can be edited from the app's Settings page:
 - `games` - process names for auto-record (find the exact name in Task
   Manager's Details tab while the game is running)
 - `lhm_url` - LibreHardwareMonitor web server endpoint
+- `temp_source` - where the CPU temperature comes from: `auto`, or one of
+  `pawnio`, `librehardwaremonitor`, `hwinfo` to use only that one
+- `pawnio_safety_check` - check Windows, published advisories and heatlog's
+  blocked-version list before reading hardware through the PawnIO driver
+  (default true; off means heatlog never uses PawnIO)
+- `pawnio_if_heatlog_unmaintained` - keep using PawnIO even when heatlog
+  itself has had no release for over a year (default false)
 - `check_updates`, `include_prereleases` - update checking (see below)
 - `delete_after_days` - delete recordings older than this on start-up; 0
   keeps them forever
@@ -267,6 +332,16 @@ row: it was 0.28% of a core before that path existed, on a machine where the
 only GPU is an integrated one. An NVIDIA GPU is cheaper to read, because NVML
 answers directly rather than through a counter query.
 
+Those rows were measured with no CPU temperature source set up. Reading the
+temperature costs something whichever way it is read, and reading it from
+the CPU is the cheaper way: measured on the same laptop at one sample a
+second, the recorder spent 2.1% of a core through PawnIO and 2.5% through
+LibreHardwareMonitor's web server. An HTTP request per sample is simply more
+work than a register read. Both figures include reading each core's own
+register every second; the shipped build does that once every ten samples
+instead, because only the package reading is recorded, so its cost sits
+below the 2.1% measured here.
+
 The WMI provider process that serves the performance-counter queries
 (WmiPrvSE) showed no measurable CPU increase.
 
@@ -282,9 +357,12 @@ The WMI provider process that serves the performance-counter queries
   core: percent-of-base-clock times each core's base frequency, the same
   calculation Task Manager shows. CPU usage and RAM come from the same
   counters via the `sysinfo` crate.
-- **CPU temperature and fans** - read from LibreHardwareMonitor's web
-  server or HWiNFO's shared memory, as described above, and degraded to
-  "unavailable" rather than guessed.
+- **CPU temperature and fans** - the CPU's own registers through the PawnIO
+  driver when heatlog is elevated and the driver has been checked
+  (`IA32_PACKAGE_THERM_STATUS` and `IA32_THERM_STATUS` against Tjmax on
+  Intel, Tctl on AMD), otherwise LibreHardwareMonitor's web server or
+  HWiNFO's shared memory, as described above. Fans always come from one of
+  the apps. Degraded to "unavailable" rather than guessed.
 - **Possible causes** - the busiest processes during a session's slow
   moments, combined with what the driver reported, turned into plain
   suggestions. Process names never leave the PC.

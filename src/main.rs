@@ -230,12 +230,31 @@ fn snapshot() -> Result<()> {
     print_cpu(&cpu.read());
 
     let cfg = config::load_or_create()?;
-    match sensors::cpu_temp::detect(&cfg.lhm_url) {
+    // One-shot command, so the driver-safety check runs here and now
+    // rather than in the background: snapshot is what someone runs to
+    // find out where they stand.
+    let safety = heatlog::driver_safety::refresh(&cfg);
+    match sensors::cpu_temp::detect(&cfg) {
         Some(mut source) => match source.read() {
             Ok(reading) => {
                 match reading.cpu_temp_c {
                     Some(t) => println!("CPU temp:     {t:.1} °C ({})", source.label()),
                     None => println!("CPU temp:     unavailable"),
+                }
+                if !reading.cores.is_empty() {
+                    let cores: Vec<String> = reading
+                        .cores
+                        .iter()
+                        .map(|core| format!("{core:.0}"))
+                        .collect();
+                    // Cores reading the same temperature collapse into
+                    // one entry, so this is the distinct readings, not a
+                    // row per core.
+                    println!(
+                        "Per core:     {} °C ({} distinct readings)",
+                        cores.join(", "),
+                        cores.len()
+                    );
                 }
                 for fan in &reading.fans {
                     println!("Fan:          {} rpm ({})", fan.rpm, fan.name);
@@ -244,6 +263,9 @@ fn snapshot() -> Result<()> {
             Err(e) => println!("CPU temp:     unavailable ({e:#})"),
         },
         None => println!("CPU temp:     unavailable"),
+    }
+    if let Some(reason) = safety.reason.filter(|_| cfg.pawnio_safety_check) {
+        println!("PawnIO:       {reason}");
     }
     Ok(())
 }

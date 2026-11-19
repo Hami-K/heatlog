@@ -338,6 +338,21 @@ fn same_dir(a: &Path, b: &Path) -> bool {
     }
 }
 
+/// One registry value as a string, or None when the key, the value or
+/// `reg` itself is not there. Shared with the PawnIO code, which asks the
+/// registry the same questions.
+pub(crate) fn reg_value(key: &str, name: &str) -> Option<String> {
+    let output = reg(&["query", key, "/v", name])?;
+    let value = output
+        .lines()
+        .find(|line| line.contains(name))?
+        .split("REG_SZ")
+        .nth(1)?
+        .trim()
+        .to_string();
+    (!value.is_empty()).then_some(value)
+}
+
 fn reg(args: &[&str]) -> Option<String> {
     use std::os::windows::process::CommandExt;
     // Without this a console window flashes up over the app.

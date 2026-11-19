@@ -5,7 +5,10 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+// No deny_unknown_fields: a newer heatlog writes settings an older one
+// has never heard of, and refusing the whole file over one unknown line
+// would leave the older copy with no config at all.
+#[serde(default)]
 pub struct Config {
     pub interval_secs: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -22,6 +25,19 @@ pub struct Config {
     /// caused a slowdown. Names of running programs are personal, so this
     /// can be switched off.
     pub record_processes: bool,
+    /// Where the CPU temperature comes from: "auto" takes the best
+    /// source available, or name one of "pawnio",
+    /// "librehardwaremonitor", "hwinfo".
+    pub temp_source: String,
+    /// Check published advisories, Windows itself and heatlog's own
+    /// blocked-version list before reading hardware through the PawnIO
+    /// kernel driver. Switching this off means heatlog never uses
+    /// PawnIO. Deliberately separate from `check_updates`: turning off
+    /// update checks must not turn off a safety check.
+    pub pawnio_safety_check: bool,
+    /// Keep using PawnIO even when heatlog itself has had no release for
+    /// over a year and so is probably unmaintained.
+    pub pawnio_if_heatlog_unmaintained: bool,
 }
 
 impl Default for Config {
@@ -35,6 +51,9 @@ impl Default for Config {
             include_prereleases: false,
             delete_after_days: 0,
             record_processes: true,
+            temp_source: "auto".to_string(),
+            pawnio_safety_check: true,
+            pawnio_if_heatlog_unmaintained: false,
         }
     }
 }
@@ -88,6 +107,24 @@ delete_after_days = 0
 # suggest what caused a slowdown. Program names are written into session
 # files; set this to false to record hardware readings only.
 record_processes = true
+
+# Where the CPU temperature comes from. "auto" uses the best source
+# available: PawnIO when heatlog is running as administrator, otherwise
+# LibreHardwareMonitor, otherwise HWiNFO. Set it to "pawnio",
+# "librehardwaremonitor" or "hwinfo" to pin one.
+temp_source = "auto"
+
+# Before reading hardware through the PawnIO kernel driver, check
+# Windows, published advisories and heatlog's own blocked-version list,
+# and fall back to LibreHardwareMonitor or HWiNFO if anything looks
+# wrong. Switching this off means heatlog never uses PawnIO at all. This
+# is not the update check: turning off update checks leaves it on.
+pawnio_safety_check = true
+
+# heatlog stops using PawnIO if heatlog itself has had no release for
+# over a year, because an unmaintained app cannot promise a kernel driver
+# is still safe. Set this to true to keep using it anyway.
+pawnio_if_heatlog_unmaintained = false
 "#;
 
 /// The version that last ran. Kept beside the config rather than in it:
@@ -159,9 +196,24 @@ mod tests {
     }
 
     #[test]
+    fn an_older_heatlog_still_reads_a_config_written_by_a_newer_one() {
+        // The 0.3.0 bug: one unknown key made the whole file unusable.
+        let cfg: Config = toml::from_str(
+            "interval_secs = 2
+something_from_the_future = \"yes\"
+",
+        )
+        .expect("an unknown setting must not throw the config away");
+        assert_eq!(cfg.interval_secs, 2);
+    }
+
+    #[test]
     fn the_default_template_parses() {
         let cfg: Config = toml::from_str(DEFAULT_TEMPLATE).unwrap();
         assert_eq!(cfg.interval_secs, 1);
         assert!(cfg.sessions_dir.is_none());
+        assert_eq!(cfg.temp_source, "auto");
+        assert!(cfg.pawnio_safety_check);
+        assert!(!cfg.pawnio_if_heatlog_unmaintained);
     }
 }

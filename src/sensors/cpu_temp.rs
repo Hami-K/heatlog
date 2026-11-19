@@ -10,6 +10,9 @@ use serde_json::Value;
 use sysinfo::{ProcessesToUpdate, System};
 
 use super::hwinfo::HwInfoShm;
+use super::pawnio::{self, OpenError};
+use crate::config::Config;
+use crate::driver_safety;
 
 /// One fan, as the monitoring app names it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,6 +26,11 @@ pub struct Fan {
 #[derive(Debug, Default)]
 pub struct Reading {
     pub cpu_temp_c: Option<f32>,
+    /// Per-core temperatures, hottest last, when the source reads the
+    /// cores one by one (PawnIO does; the monitoring apps hand over one
+    /// package figure). Not recorded into sessions - they are a live
+    /// detail, and a session file should not grow by a column per core.
+    pub cores: Vec<f32>,
     pub fans: Vec<Fan>,
 }
 
@@ -41,16 +49,33 @@ pub trait CpuTempSource {
     fn read(&mut self) -> Result<Reading>;
 }
 
-/// Returns the first source that produces a plausible reading right now:
-/// LibreHardwareMonitor's web server, then HWiNFO's shared memory.
-pub fn detect(lhm_url: &str) -> Option<Box<dyn CpuTempSource>> {
-    let mut lhm = LhmWebServer {
-        url: lhm_url.to_string(),
-    };
-    if lhm.read().is_ok_and(|reading| reading.cpu_temp_c.is_some()) {
-        return Some(Box::new(lhm));
+/// Returns the first source that produces a plausible reading right now.
+///
+/// PawnIO leads: it reads the CPU's own temperature register instead of
+/// borrowing another app's reading, so nothing else has to be running.
+/// It is only ever used when heatlog happens to be running as
+/// administrator and the driver-safety check has cleared the installed
+/// driver; otherwise this falls through to LibreHardwareMonitor and then
+/// HWiNFO, exactly as before. A source named in the config is the only
+/// one tried.
+pub fn detect(cfg: &Config) -> Option<Box<dyn CpuTempSource>> {
+    let pinned = cfg.temp_source.trim().to_ascii_lowercase();
+    let wanted = |name: &str| pinned == "auto" || pinned.is_empty() || pinned == name;
+
+    if wanted("pawnio") && driver_safety::status(cfg).usable {
+        if let Ok(source) = pawnio::detect() {
+            return Some(Box::new(source));
+        }
     }
-    if HwInfoShm::available() {
+    if wanted("librehardwaremonitor") {
+        let mut lhm = LhmWebServer {
+            url: cfg.lhm_url.clone(),
+        };
+        if lhm.read().is_ok_and(|reading| reading.cpu_temp_c.is_some()) {
+            return Some(Box::new(lhm));
+        }
+    }
+    if wanted("hwinfo") && HwInfoShm::available() {
         return Some(Box::new(HwInfoShm));
     }
     None
@@ -90,9 +115,52 @@ pub struct Availability {
     /// Where HWiNFO is installed, so a fresh install is noticed without a
     /// restart.
     pub hwinfo_path: Option<PathBuf>,
+    /// The installed PawnIO driver's version, when it is installed.
+    pub pawnio_version: Option<String>,
+    pub pawnio: PawnIo,
+    /// A newer PawnIO than the installed one, when the check found one.
+    pub pawnio_update: Option<String>,
 }
 
-pub fn availability(lhm_url: &str) -> Availability {
+/// What the setup page needs to say about PawnIO, in the order the user
+/// can do something about.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PawnIo {
+    NotInstalled,
+    /// Installed, but heatlog is not elevated, so the driver's
+    /// administrators-only device refuses it.
+    NeedsAdmin,
+    /// Reachable, but heatlog will not use it, and why.
+    Blocked(String),
+    /// Cleared for use.
+    Ready,
+}
+
+/// Where PawnIO stands right now: whether it is installed, whether this
+/// heatlog can open it, and whether the safety check cleared it.
+pub fn pawnio_state(cfg: &Config) -> PawnIo {
+    if pawnio::installed_version().is_none() {
+        return PawnIo::NotInstalled;
+    }
+    if let Err(e) = pawnio::probe() {
+        return match e {
+            OpenError::NotInstalled => PawnIo::NotInstalled,
+            OpenError::NeedsAdmin => PawnIo::NeedsAdmin,
+            other => PawnIo::Blocked(other.to_string()),
+        };
+    }
+    let status = driver_safety::status(cfg);
+    match status.reason {
+        Some(reason) if !status.usable => PawnIo::Blocked(reason),
+        _ if !status.usable => PawnIo::Blocked(
+            "heatlog has not finished checking whether this driver is safe.".to_string(),
+        ),
+        _ => PawnIo::Ready,
+    }
+}
+
+pub fn availability(cfg: &Config) -> Availability {
+    let lhm_url = &cfg.lhm_url;
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::All, true);
     let running = |needle: &str| {
@@ -124,6 +192,9 @@ pub fn availability(lhm_url: &str) -> Availability {
         lhm_web,
         lhm_path: find_lhm(&sys),
         hwinfo_path: find_hwinfo(&sys),
+        pawnio_version: pawnio::installed_version(),
+        pawnio: pawnio_state(cfg),
+        pawnio_update: driver_safety::status(cfg).update_to,
     }
 }
 
@@ -237,6 +308,7 @@ pub fn parse_lhm(root: &Value) -> Reading {
     walk(root, &mut Vec::new(), &mut best, &mut fans);
     Reading {
         cpu_temp_c: best.map(|(_, temp)| temp),
+        cores: Vec::new(),
         fans,
     }
 }

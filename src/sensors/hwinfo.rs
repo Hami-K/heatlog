@@ -202,6 +202,7 @@ pub fn parse(bytes: &[u8]) -> Reading {
     }
     Reading {
         cpu_temp_c: best.map(|(_, celsius)| celsius),
+        cores: Vec::new(),
         fans,
     }
 }

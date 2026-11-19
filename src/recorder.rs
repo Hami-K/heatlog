@@ -10,6 +10,7 @@ use anyhow::Result;
 use chrono::{Local, Utc};
 use sysinfo::{Pid, ProcessesToUpdate, System};
 
+use crate::config::Config;
 use crate::sensors::cpu::CpuSensor;
 use crate::sensors::cpu_temp::{self, CpuTempSource};
 use crate::sensors::gpu::{self, GpuInfo, GpuSource};
@@ -38,18 +39,18 @@ pub struct Sensors {
 impl Sensors {
     /// The first init on a machine can take a few seconds (WMI/COM
     /// startup, temperature source probing).
-    pub fn init(lhm_url: &str, record_processes: bool) -> Self {
+    pub fn init(cfg: &Config) -> Self {
         let gpus = gpu::detect();
         let mut cpu = CpuSensor::new();
-        let mut temp_source = cpu_temp::detect(lhm_url);
-        let fan_source = fan_source_for(lhm_url, &mut temp_source);
+        let mut temp_source = cpu_temp::detect(cfg);
+        let fan_source = fan_source_for(&cfg.lhm_url, &mut temp_source);
         let first_read = cpu.read();
         Self {
             gpus,
             cpu,
             temp_source,
             fan_source,
-            processes: record_processes.then(ProcessWatch::new),
+            processes: cfg.record_processes.then(ProcessWatch::new),
             cpu_name: first_read.name,
             ram_total_mib: first_read.ram_total_mib,
         }
@@ -84,9 +85,9 @@ impl Sensors {
 
     /// Looks for a temperature source again, after the user has started or
     /// configured one.
-    pub fn reprobe_temp(&mut self, lhm_url: &str) {
-        self.temp_source = cpu_temp::detect(lhm_url);
-        self.fan_source = fan_source_for(lhm_url, &mut self.temp_source);
+    pub fn reprobe_temp(&mut self, cfg: &Config) {
+        self.temp_source = cpu_temp::detect(cfg);
+        self.fan_source = fan_source_for(&cfg.lhm_url, &mut self.temp_source);
     }
 
     /// Which app the fan speeds come from, when it is not the temperature
@@ -177,13 +178,12 @@ pub struct Step {
 
 impl Recorder {
     pub fn start(
-        lhm_url: &str,
+        cfg: &Config,
         sessions_dir: &Path,
         interval_secs: u64,
         game: Option<(Pid, String)>,
-        record_processes: bool,
     ) -> Result<Self> {
-        let sensors = Sensors::init(lhm_url, record_processes);
+        let sensors = Sensors::init(cfg);
         let meta = sensors.session_meta(interval_secs, game.as_ref().map(|(_, n)| n.clone()));
         let writer = SessionWriter::create(sessions_dir, &meta)?;
         Ok(Self {
@@ -272,7 +272,14 @@ mod tests {
     #[test]
     fn records_meta_and_one_sample() {
         let dir = std::env::temp_dir().join(format!("heatlog-rec-test-{}", std::process::id()));
-        let mut rec = Recorder::start("http://127.0.0.1:9/none", &dir, 1, None, true).unwrap();
+        // Pinned to LibreHardwareMonitor at a closed port: the test
+        // must not go near a kernel driver or the network.
+        let cfg = Config {
+            lhm_url: "http://127.0.0.1:9/none".to_string(),
+            temp_source: "librehardwaremonitor".to_string(),
+            ..Config::default()
+        };
+        let mut rec = Recorder::start(&cfg, &dir, 1, None).unwrap();
         std::thread::sleep(Duration::from_millis(1100));
         let step = rec.step().unwrap();
         assert!(step.game_exited.is_none());

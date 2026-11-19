@@ -55,13 +55,11 @@ pub fn run(
         None
     };
 
-    let mut rec = Recorder::start(
-        &cfg.lhm_url,
-        &sessions_dir,
-        interval_secs,
-        game,
-        cfg.record_processes,
-    )?;
+    // On the network, so it runs beside the recording rather than
+    // delaying its first sample; this run uses whatever the last check
+    // decided.
+    heatlog::driver_safety::refresh_in_background(cfg);
+    let mut rec = Recorder::start(cfg, &sessions_dir, interval_secs, game)?;
     if !rec.gpu_available() {
         println!("GPU unavailable, recording CPU/RAM only");
     }
