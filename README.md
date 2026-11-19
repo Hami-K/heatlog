@@ -178,17 +178,32 @@ A one-hour session is roughly 2 MB.
 
 ## Updates
 
-On start-up the app asks GitHub whether a newer release exists, and offers a
-one-click update that downloads the installer, checks it against the
-SHA-256 published in that release and only then runs it. A download that
-does not match its checksum, or that is not listed at all, is refused with
-an explanation rather than run, and downloads only ever come from this
-project's own release URLs over HTTPS. That request is the
-only time heatlog contacts the internet, it sends nothing but the request
-itself, and it never updates while a recording is running. Turn it off with
-the "Check GitHub for updates on start-up" checkbox in Settings, or
-`check_updates = false` in the config file. Pre-releases are ignored unless
-you opt in.
+On start-up the app asks GitHub whether a newer release exists. If several
+have come out since, it offers the newest one, not the next one in line.
+
+The update happens inside heatlog: a dialog downloads that release's
+program files, checks each one against the SHA-256 published in the same
+release, and replaces heatlog's own files in place. There is no installer,
+no setup wizard and no admin prompt, because everything lives under your
+own `%LOCALAPPDATA%`. A download that does not match its checksum, or that
+is not listed at all, is refused with an explanation rather than installed,
+and downloads only ever come from this project's own release URLs over
+HTTPS. If any step fails the previous files are put back, so heatlog always
+still launches. Windows cannot overwrite a running program, so the old one
+is renamed aside and deleted the next time heatlog starts.
+
+Updates never run while a recording is running, and the new files land at
+exactly the same paths under the same names, so taskbar and Start menu pins
+keep working. The release's `heatlog-setup.exe` is only for a first
+install.
+
+Those requests are the only time heatlog contacts the internet, and they
+send nothing but the request itself. Turn them off with the "Check GitHub
+for updates on start-up" checkbox in Settings, or `check_updates = false`
+in the config file. Pre-releases are ignored unless you opt in.
+
+After an update installs, the next start shows once what changed since the
+version you were on, combining the notes of every release you skipped.
 
 ## Overhead
 

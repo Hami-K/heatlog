@@ -41,9 +41,12 @@ Source: "heatlog.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
+; AppUserModelID matches the id heatlog sets on its own window, so
+; Windows treats a pinned shortcut and the running app as one app - which
+; is what keeps a taskbar pin working after an in-app update.
 [Icons]
-Name: "{autoprograms}\heatlog"; Filename: "{app}\heatlog-gui.exe"; IconFilename: "{app}\heatlog.ico"
-Name: "{autodesktop}\heatlog"; Filename: "{app}\heatlog-gui.exe"; IconFilename: "{app}\heatlog.ico"; Tasks: desktopicon
+Name: "{autoprograms}\heatlog"; Filename: "{app}\heatlog-gui.exe"; IconFilename: "{app}\heatlog.ico"; AppUserModelID: "HamiKhatri.heatlog"
+Name: "{autodesktop}\heatlog"; Filename: "{app}\heatlog-gui.exe"; IconFilename: "{app}\heatlog.ico"; AppUserModelID: "HamiKhatri.heatlog"; Tasks: desktopicon
 
 [Run]
 Filename: "{app}\heatlog-gui.exe"; Description: "Start heatlog"; Flags: nowait postinstall skipifsilent

@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod pages;
+mod updater;
 mod view;
 mod worker;
 
@@ -56,6 +57,10 @@ pub fn temp_frac(celsius: f64) -> f32 {
 }
 
 fn main() -> Result<(), eframe::Error> {
+    // Left behind by an in-app update: Windows cannot delete a running
+    // program, so the previous version is removed on the next start.
+    heatlog::update::clean_old_files();
+    set_app_user_model_id();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1060.0, 740.0])
@@ -71,6 +76,19 @@ fn main() -> Result<(), eframe::Error> {
         options,
         Box::new(|cc| Ok(Box::new(App::new(cc)))),
     )
+}
+
+/// Tells Windows which app this window belongs to. Without it the taskbar
+/// groups by executable path and heuristics; with a fixed id, heatlog is
+/// always the same app, so a pinned icon keeps working across updates.
+fn set_app_user_model_id() {
+    // Unavoidable unsafe: this shell call has no safe wrapper. It only
+    // sets a string on the current process.
+    unsafe {
+        let _ = windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
+            windows::core::w!("HamiKhatri.heatlog"),
+        );
+    }
 }
 
 /// A simple original flame, drawn in code: an outer rust teardrop with an
@@ -233,7 +251,16 @@ pub struct App {
     pub confirm_delete_all: bool,
     pub update: Option<heatlog::update::Available>,
     update_rx: Receiver<Option<heatlog::update::Available>>,
+    /// The in-app update, while it runs.
+    install: Option<updater::Install>,
+    whats_new: Option<updater::WhatsNew>,
+    /// Set on the first start after an update installed, until the notes
+    /// for it arrive.
+    notes_rx: Option<Receiver<Vec<(String, String)>>>,
     pub installing: bool,
+    /// When the temperature sources were last looked for, so the setup
+    /// page can re-scan on a timer without doing it every frame.
+    last_probe: Instant,
     pub install_error: Option<String>,
     install_rx: Option<Receiver<Result<(), String>>>,
 }
@@ -246,6 +273,15 @@ impl App {
         apply_style(&cc.egui_ctx);
 
         let cfg = heatlog::config::load_or_create().unwrap_or_default();
+        // "What's new" is owed exactly once, after an update has actually
+        // been installed: a version change against what last ran. Written
+        // down before the dialog is shown, so it cannot show twice.
+        let current = heatlog::update::current_version();
+        let updated_from = heatlog::config::last_seen_version().filter(|seen| seen != current);
+        heatlog::config::set_last_seen_version(current);
+        let notes_rx = updated_from
+            .as_deref()
+            .map(|from| updater::spawn_notes(from, &cc.egui_ctx));
         // Housekeeping before the list is built, so pruned sessions never
         // show up in it.
         let pruned = cfg
@@ -262,7 +298,14 @@ impl App {
             confirm_delete_all: false,
             update: None,
             update_rx,
+            install: None,
+            whats_new: updated_from.map(|from| updater::WhatsNew {
+                from,
+                notes: Vec::new(),
+            }),
+            notes_rx,
             installing: false,
+            last_probe: Instant::now(),
             install_error: None,
             install_rx: None,
             status: (pruned > 0).then(|| Status::new(format!("Deleted {pruned} old recording(s)"))),
@@ -344,26 +387,28 @@ impl App {
         }
     }
 
-    /// Downloads and starts the installer, then closes the window so the
-    /// files it replaces are not in use. Without an installer asset (a
-    /// portable build) the release page opens instead.
+    /// Installs the update inside heatlog: the dialog takes over from
+    /// here. A release that published no program files (nothing to swap)
+    /// falls back to its page on GitHub.
     fn start_update(&mut self, ctx: &egui::Context, available: &heatlog::update::Available) {
-        match &available.installer {
-            Some(_) => match heatlog::update::run_installer(available) {
-                Ok(_) => {
-                    self.set_status("Installer started - heatlog will close");
-                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                }
-                Err(e) => self.error = Some(format!("update failed: {e:#}")),
-            },
-            None => {
-                let _ = std::process::Command::new("cmd")
-                    .args(["/C", "start", ""])
-                    .arg(&available.page_url)
-                    .spawn();
-                self.update = None;
-            }
+        if self.recording.is_some() || self.install.is_some() {
+            return;
         }
+        if available.app_files.is_empty() {
+            pages::open_url(&available.page_url);
+            self.update = None;
+            return;
+        }
+        self.install = Some(updater::start(available, ctx));
+    }
+
+    /// Replaces the running program with the one just installed, at the
+    /// same path, so a pinned shortcut still points at it.
+    fn restart(&self, ctx: &egui::Context) {
+        if let Ok(exe) = std::env::current_exe() {
+            let _ = std::process::Command::new(exe).spawn();
+        }
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
     }
 
     pub fn delete_recording(&mut self, path: &std::path::Path, ctx: &egui::Context) {
@@ -491,6 +536,17 @@ impl eframe::App for App {
         if let Ok(found) = self.update_rx.try_recv() {
             self.update = found;
         }
+        if let Some(rx) = &self.notes_rx {
+            if let Ok(notes) = rx.try_recv() {
+                self.notes_rx = None;
+                if let Some(whats_new) = &mut self.whats_new {
+                    whats_new.notes = notes;
+                }
+            }
+        }
+        if let Some(install) = &mut self.install {
+            install.drain();
+        }
         if let Some(rx) = &self.install_rx {
             if let Ok(result) = rx.try_recv() {
                 self.installing = false;
@@ -525,6 +581,16 @@ impl eframe::App for App {
         if self.recording.is_some() && self.focused {
             ctx.request_repaint_after(Duration::from_millis(120));
         }
+        // While the setup page is open the user is in the middle of
+        // installing or starting another app: look again on our own so
+        // nothing needs a restart, or even a button press.
+        if self.page == Page::TempSetup {
+            if self.last_probe.elapsed() >= Duration::from_secs(3) {
+                self.last_probe = Instant::now();
+                self.send(worker::Cmd::Reprobe);
+            }
+            ctx.request_repaint_after(Duration::from_millis(500));
+        }
         if ctx.input(|i| i.modifiers.ctrl && i.key_pressed(egui::Key::R)) {
             let _ = self.cmds.send(if self.recording.is_some() {
                 worker::Cmd::Stop
@@ -535,10 +601,11 @@ impl eframe::App for App {
 
         self.top_bar(ctx);
         self.sidebar(ctx);
+        self.dialogs(ctx);
         egui::CentralPanel::default()
             .frame(egui::Frame::central_panel(&ctx.style()).inner_margin(egui::Margin::same(16.0)))
             .show(ctx, |ui| {
-                if let Some(available) = self.update.clone() {
+                if let Some(available) = self.update.clone().filter(|_| self.install.is_none()) {
                     card(ui, |ui| {
                         ui.horizontal(|ui| {
                             ui.label(
@@ -641,6 +708,34 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// The update and "what's new" dialogs, drawn over the app.
+    fn dialogs(&mut self, ctx: &egui::Context) {
+        if let Some(install) = &mut self.install {
+            match updater::dialog(ctx, install) {
+                updater::Action::Nothing => {}
+                updater::Action::Close => {
+                    // An installed update is no longer on offer; a failed
+                    // or cancelled one can be tried again.
+                    if install.installed() {
+                        self.update = None;
+                    }
+                    self.install = None;
+                }
+                updater::Action::Restart => self.restart(ctx),
+            }
+            return; // one dialog at a time
+        }
+        // Only once the notes have arrived, so the dialog does not flash
+        // up empty.
+        if self.notes_rx.is_none() {
+            if let Some(whats_new) = &self.whats_new {
+                if updater::whats_new_dialog(ctx, whats_new) {
+                    self.whats_new = None;
+                }
+            }
+        }
+    }
+
     fn top_bar(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("top")
             .frame(
@@ -659,7 +754,13 @@ impl App {
                             )
                             .fill(RED)
                             .min_size(egui::vec2(180.0, 34.0));
-                            if ui.add(button).clicked() {
+                            // Not while heatlog is replacing its own files.
+                            let updating = self.install.as_ref().is_some_and(|i| i.busy());
+                            if ui
+                                .add_enabled(!updating, button)
+                                .on_disabled_hover_text("Finishing the update first")
+                                .clicked()
+                            {
                                 let _ = self.cmds.send(worker::Cmd::Record);
                             }
                         }

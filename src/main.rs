@@ -58,6 +58,8 @@ fn main() -> Result<()> {
     unsafe {
         let _ = windows::Win32::System::Console::SetConsoleOutputCP(65001);
     }
+    // Left behind by an update: a running program cannot delete itself.
+    heatlog::update::clean_old_files();
     let cli = Cli::parse();
     match cli.command {
         Command::Snapshot => snapshot(),
@@ -117,12 +119,7 @@ fn update() -> Result<()> {
         ""
     };
     println!("Update available: {}{kind}", available.version);
-    let Some(installer) = &available.installer else {
-        println!("No installer in that release. See {}", available.page_url);
-        return Ok(());
-    };
-
-    print!("Download and run the installer now? [y/N] ");
+    print!("Download and install it now? [y/N] ");
     std::io::Write::flush(&mut std::io::stdout())?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
@@ -130,12 +127,28 @@ fn update() -> Result<()> {
         println!("Left alone.");
         return Ok(());
     }
+
+    // heatlog replaces its own files, so there is no installer to run and
+    // no admin prompt; the running exe is renamed aside and removed on the
+    // next start.
+    let cancel = std::sync::atomic::AtomicBool::new(false);
+    let mut shown = 0u64;
+    heatlog::update::install_in_place(&available, &cancel, |progress| {
+        match progress {
+            heatlog::update::Progress::Downloading { got, total } => {
+                // One line per megabyte, not per chunk.
+                if got >= shown + (1 << 20) || got == total {
+                    shown = got;
+                    println!("  {} MB of {} MB", got >> 20, total >> 20);
+                }
+            }
+            heatlog::update::Progress::Installing => println!("Installing..."),
+        }
+    })?;
     println!(
-        "Downloading {} and checking its published SHA-256...",
-        installer.name
+        "heatlog {} installed. Run it again to use the new version.",
+        available.version
     );
-    let path = heatlog::update::run_installer(&available)?;
-    println!("Installer started from {}", path.display());
     Ok(())
 }
 

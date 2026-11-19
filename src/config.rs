@@ -90,6 +90,22 @@ delete_after_days = 0
 record_processes = true
 "#;
 
+/// The version that last ran. Kept beside the config rather than in it:
+/// it is heatlog's own bookkeeping, not a setting, and writing the config
+/// file would throw away the comments the user reads there.
+pub fn last_seen_version() -> Option<String> {
+    let path = data_dir().ok()?.join("last-seen-version");
+    let version = fs::read_to_string(path).ok()?.trim().to_string();
+    (!version.is_empty()).then_some(version)
+}
+
+pub fn set_last_seen_version(version: &str) {
+    if let Ok(dir) = data_dir() {
+        let _ = fs::create_dir_all(&dir);
+        let _ = fs::write(dir.join("last-seen-version"), version);
+    }
+}
+
 pub fn config_path() -> Result<PathBuf> {
     Ok(data_dir()?.join("config.toml"))
 }
