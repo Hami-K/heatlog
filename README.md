@@ -170,6 +170,10 @@ a confirmation, and optionally pruned automatically after a number of days.
 Deleted recordings (and any HTML report exported beside them) go to the
 Recycle Bin; if Windows refuses, heatlog deletes them outright instead.
 
+Recordings stopped within about ten seconds, or with fewer than two
+samples, are discarded rather than saved: there is nothing in them to chart
+or judge, and the app says so.
+
 A one-hour session is roughly 2 MB.
 
 ## Updates

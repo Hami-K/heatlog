@@ -445,6 +445,10 @@ impl App {
                     ));
                     self.recordings = pages::Recordings::load(ctx);
                 }
+                worker::Event::RecordingDiscarded => {
+                    self.recording = None;
+                    self.set_status("Recording too short, not saved");
+                }
                 worker::Event::Error(e) => self.error = Some(e),
                 worker::Event::Hint(hint) => self.hint = Some(hint),
             }

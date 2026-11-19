@@ -39,8 +39,15 @@ pub struct Info {
 pub enum Event {
     Ready(Box<Info>),
     Tick(Box<Sample>),
-    RecordingStarted { game: Option<String> },
-    RecordingStopped { path: PathBuf, samples: u64 },
+    RecordingStarted {
+        game: Option<String>,
+    },
+    RecordingStopped {
+        path: PathBuf,
+        samples: u64,
+    },
+    /// Stopped so soon that nothing was worth saving; the file is gone.
+    RecordingDiscarded,
     Error(String),
     Hint(String),
 }
@@ -52,8 +59,19 @@ pub fn spawn(ctx: egui::Context) -> (Sender<Cmd>, Receiver<Event>) {
     (cmd_tx, event_rx)
 }
 
+/// A recording this short is a mis-click or a crash-landed game launch,
+/// not a session worth keeping: two samples is the minimum any chart or
+/// verdict can be built from.
+const MIN_SAMPLES: u64 = 2;
+const MIN_DURATION: Duration = Duration::from_secs(10);
+
+fn too_short(samples: u64, elapsed: Duration) -> bool {
+    samples < MIN_SAMPLES || elapsed < MIN_DURATION
+}
+
 struct Recording {
     writer: SessionWriter,
+    started: Instant,
     samples: u64,
     game: Option<(Pid, String)>,
     /// Ticks since the last appended sample: the live view always samples
@@ -225,6 +243,7 @@ fn start_recording(
         Ok(writer) => {
             *recording = Some(Recording {
                 writer,
+                started: Instant::now(),
                 samples: 0,
                 game,
                 since_append: interval_secs.saturating_sub(1), // record promptly
@@ -236,10 +255,36 @@ fn start_recording(
 }
 
 fn stop_recording(recording: &mut Option<Recording>, send: &impl Fn(Event)) {
-    if let Some(rec) = recording.take() {
-        send(Event::RecordingStopped {
-            path: rec.writer.path().to_path_buf(),
-            samples: rec.samples,
-        });
+    let Some(rec) = recording.take() else {
+        return;
+    };
+    let path = rec.writer.path().to_path_buf();
+    let (samples, elapsed) = (rec.samples, rec.started.elapsed());
+    // Dropping the writer first closes the file, so it can be deleted.
+    drop(rec);
+    if too_short(samples, elapsed) {
+        // Removed outright, not to the recycle bin: heatlog made this
+        // file seconds ago and never showed it to anyone.
+        let _ = std::fs::remove_file(&path);
+        send(Event::RecordingDiscarded);
+        return;
+    }
+    send(Event::RecordingStopped { path, samples });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{too_short, Duration};
+
+    #[test]
+    fn only_a_real_session_is_kept() {
+        // A mis-click: stopped after a second or two.
+        assert!(too_short(1, Duration::from_secs(1)));
+        assert!(too_short(2, Duration::from_secs(4)));
+        // Long enough, but the recording interval was slower than it.
+        assert!(too_short(1, Duration::from_secs(30)));
+        // The shortest session worth keeping.
+        assert!(!too_short(2, Duration::from_secs(10)));
+        assert!(!too_short(120, Duration::from_secs(120)));
     }
 }
