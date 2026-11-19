@@ -207,6 +207,10 @@ pub struct SettingsDraft {
     pub include_prereleases: bool,
     pub delete_after_days: u64,
     pub record_processes: bool,
+    /// "auto", or the one source the user pinned.
+    pub temp_source: String,
+    pub pawnio_safety_check: bool,
+    pub pawnio_if_heatlog_unmaintained: bool,
     pub saved: Option<String>,
 }
 
@@ -220,6 +224,9 @@ impl SettingsDraft {
             include_prereleases: cfg.include_prereleases,
             delete_after_days: cfg.delete_after_days,
             record_processes: cfg.record_processes,
+            temp_source: cfg.temp_source.clone(),
+            pawnio_safety_check: cfg.pawnio_safety_check,
+            pawnio_if_heatlog_unmaintained: cfg.pawnio_if_heatlog_unmaintained,
             saved: None,
         }
     }
@@ -257,7 +264,8 @@ pub struct App {
     /// Set on the first start after an update installed, until the notes
     /// for it arrive.
     notes_rx: Option<Receiver<Vec<(String, String)>>>,
-    pub installing: bool,
+    /// Which app winget is installing right now, if any.
+    pub installing: Option<&'static str>,
     /// When the temperature sources were last looked for, so the setup
     /// page can re-scan on a timer without doing it every frame.
     last_probe: Instant,
@@ -304,7 +312,7 @@ impl App {
                 notes: Vec::new(),
             }),
             notes_rx,
-            installing: false,
+            installing: None,
             last_probe: Instant::now(),
             install_error: None,
             install_rx: None,
@@ -325,19 +333,20 @@ impl App {
         }
     }
 
-    /// Installs HWiNFO on a thread of its own: winget takes a minute and
-    /// must not stall the window or the sampling loop.
-    pub fn start_hwinfo_install(&mut self) {
-        if self.installing {
+    /// Installs or updates one app through winget, on a thread of its
+    /// own: winget takes a minute and must not stall the window or the
+    /// sampling loop.
+    pub fn start_install(&mut self, app: &'static str, action: &'static str, id: &'static str) {
+        if self.installing.is_some() {
             return;
         }
         let (tx, rx) = std::sync::mpsc::channel();
-        self.installing = true;
+        self.installing = Some(app);
         self.install_error = None;
         self.status = None;
         self.install_rx = Some(rx);
         std::thread::spawn(move || {
-            let _ = tx.send(pages::install_hwinfo());
+            let _ = tx.send(pages::winget(action, id));
         });
     }
 
@@ -375,6 +384,9 @@ impl App {
         cfg.include_prereleases = self.settings.include_prereleases;
         cfg.delete_after_days = self.settings.delete_after_days;
         cfg.record_processes = self.settings.record_processes;
+        cfg.temp_source = self.settings.temp_source.clone();
+        cfg.pawnio_safety_check = self.settings.pawnio_safety_check;
+        cfg.pawnio_if_heatlog_unmaintained = self.settings.pawnio_if_heatlog_unmaintained;
         match heatlog::config::save(&cfg) {
             Ok(()) => {
                 self.settings.saved = Some("Saved".to_string());
@@ -382,6 +394,9 @@ impl App {
                     games: cfg.games,
                     interval_secs: cfg.interval_secs,
                 });
+                // Reprobe re-reads the config, so a changed temperature
+                // source applies straight away.
+                self.send(worker::Cmd::Reprobe);
             }
             Err(e) => self.error = Some(format!("could not save settings: {e:#}")),
         }
@@ -555,14 +570,17 @@ impl eframe::App for App {
         }
         if let Some(rx) = &self.install_rx {
             if let Ok(result) = rx.try_recv() {
-                self.installing = false;
+                let app = self.installing.take();
                 self.install_rx = None;
                 match result {
                     Ok(()) => {
                         self.install_error = None;
-                        self.set_status(
-                            "HWiNFO installed - start it and tick Shared Memory Support.",
-                        );
+                        self.set_status(match app {
+                            Some("PawnIO") => {
+                                "PawnIO installed - restart heatlog as administrator to use it."
+                            }
+                            _ => "HWiNFO installed - start it and tick Shared Memory Support.",
+                        });
                         self.send(worker::Cmd::Reprobe);
                     }
                     Err(reason) => {

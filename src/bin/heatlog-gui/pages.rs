@@ -106,6 +106,27 @@ pub fn cpu(ui: &mut egui::Ui, app: &App) {
     });
     ui.add_space(10.0);
 
+    // A driver heatlog has stopped trusting is worth saying out loud,
+    // even though temperatures still work through another source.
+    if let Some(reason) = app.info.as_ref().and_then(|i| match &i.avail.pawnio {
+        heatlog::sensors::cpu_temp::PawnIo::Blocked(reason) => Some(reason.clone()),
+        _ => None,
+    }) {
+        card(ui, |ui| {
+            ui.label(
+                RichText::new(format!("{}  heatlog is not using PawnIO.", icons::WARNING))
+                    .color(AMBER),
+            );
+            ui.label(RichText::new(reason).small());
+            ui.label(
+                RichText::new("Settings > CPU temperature has the details and the way out.")
+                    .weak()
+                    .small(),
+            );
+        });
+        ui.add_space(10.0);
+    }
+
     let mut stats: Vec<(&str, String)> = Vec::new();
     if let Some(s) = &app.latest {
         stats.push(("Utilization", format!("{:.0}%", s.cpu.usage_pct)));
@@ -703,16 +724,20 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
 
     card(ui, |ui| {
         ui.label(
-            "Windows has no unprivileged way to read CPU temperature, so heatlog borrows the \
-             reading from a monitoring app that already ships a signed driver. Either of these \
-             works; HWiNFO is the smoother one.",
+            "Windows has no unprivileged way to read CPU temperature. heatlog can read it \
+             straight from the CPU through the PawnIO driver when it is running as \
+             administrator, or borrow the reading from a monitoring app that already ships a \
+             signed driver.",
         );
     });
     ui.add_space(10.0);
 
+    pawnio_card(ui, app);
+    ui.add_space(10.0);
+
     card(ui, |ui| {
         ui.label(
-            RichText::new("LibreHardwareMonitor (recommended)")
+            RichText::new("LibreHardwareMonitor (alternative)")
                 .strong()
                 .size(15.0),
         );
@@ -818,20 +843,24 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
             .small(),
         );
         ui.horizontal(|ui| {
-            ui.add_enabled_ui(!app.installing && hwinfo_path.is_none(), |ui| {
+            ui.add_enabled_ui(app.installing.is_none() && hwinfo_path.is_none(), |ui| {
                 if ui
                     .button(format!("{}  Install HWiNFO", icons::DOWNLOAD_SIMPLE))
                     .on_disabled_hover_text("Already installed")
                     .clicked()
                 {
-                    app.start_hwinfo_install();
+                    app.start_install("HWiNFO", "install", HWINFO_ID);
                 }
             });
-            if app.installing {
+            if app.installing == Some("HWiNFO") {
                 ui.label(RichText::new("installing, this takes a minute...").weak());
             }
         });
-        if let Some(error) = &app.install_error {
+        if let Some(error) = app
+            .install_error
+            .as_ref()
+            .filter(|_| app.installing.is_none())
+        {
             ui.label(
                 RichText::new("Automatic install didn't work - download HWiNFO from its official site instead.")
                     .color(AMBER),
@@ -890,21 +919,186 @@ pub fn temp_setup(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
     nav
 }
 
+/// PawnIO: the one source that needs nothing else running, and the one
+/// that needs heatlog itself to be elevated. Every state here says what
+/// the user can do about it, including the states where heatlog has
+/// decided not to use the driver at all.
+fn pawnio_card(ui: &mut egui::Ui, app: &mut App) {
+    use heatlog::sensors::cpu_temp::PawnIo;
+    let (state, version, update) = match &app.info {
+        Some(info) => (
+            info.avail.pawnio.clone(),
+            info.avail.pawnio_version.clone(),
+            info.avail.pawnio_update.clone(),
+        ),
+        None => (PawnIo::NotInstalled, None, None),
+    };
+    let in_use = app.info.as_ref().and_then(|i| i.cpu_temp_source) == Some("PawnIO");
+
+    card(ui, |ui| {
+        ui.label(RichText::new("PawnIO (recommended)").strong().size(15.0));
+        ui.label(
+            RichText::new(
+                "A small signed driver that lets heatlog read the temperature the CPU reports \
+                 about itself. Nothing else has to be running, and heatlog only ever reads.",
+            )
+            .weak()
+            .small(),
+        );
+        ui.add_space(4.0);
+
+        match &state {
+            PawnIo::Ready if in_use => {
+                ui.label(
+                    RichText::new(format!("{}  Reading the CPU's own sensor.", icons::CHECK))
+                        .color(GREEN),
+                );
+            }
+            PawnIo::Ready => {
+                ui.label(
+                    RichText::new(format!("{}  Ready - heatlog will use it.", icons::CHECK))
+                        .color(GREEN),
+                );
+            }
+            PawnIo::NeedsAdmin => {
+                ui.label(
+                    RichText::new(format!(
+                        "{}  Installed, but heatlog is not running as administrator.",
+                        icons::WARNING
+                    ))
+                    .color(AMBER),
+                );
+                ui.label(
+                    RichText::new(
+                        "PawnIO answers programs with administrator rights only, so heatlog \
+                         cannot reach it on an ordinary run and will not ask you to elevate. \
+                         Close heatlog, right-click it and choose Run as administrator to use \
+                         it. Ordinary runs keep using LibreHardwareMonitor or HWiNFO.",
+                    )
+                    .weak()
+                    .small(),
+                );
+            }
+            PawnIo::NotInstalled => {
+                ui.label(RichText::new("Not installed.").weak());
+                ui.label(
+                    RichText::new(
+                        "Windows will ask for admin permission during the install, because this \
+                         installs a driver. That prompt is one-off: heatlog itself never asks.",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(app.installing.is_none(), |ui| {
+                        if ui
+                            .button(format!("{}  Install PawnIO", icons::DOWNLOAD_SIMPLE))
+                            .clicked()
+                        {
+                            app.start_install("PawnIO", "install", PAWNIO_ID);
+                        }
+                    });
+                    if app.installing == Some("PawnIO") {
+                        ui.label(RichText::new("installing, this takes a minute...").weak());
+                    }
+                });
+                if let Some(error) = app
+                    .install_error
+                    .as_ref()
+                    .filter(|_| app.installing.is_none())
+                {
+                    ui.label(
+                        RichText::new(
+                            "That didn't work. LibreHardwareMonitor or HWiNFO below work without \
+                             it.",
+                        )
+                        .color(AMBER),
+                    );
+                    ui.label(RichText::new(error).weak().small());
+                }
+            }
+            PawnIo::Blocked(reason) => {
+                ui.label(
+                    RichText::new(format!("{}  heatlog is not using PawnIO.", icons::WARNING))
+                        .color(AMBER),
+                );
+                ui.label(reason);
+                ui.label(
+                    RichText::new(
+                        "Temperatures still work through LibreHardwareMonitor or HWiNFO below.",
+                    )
+                    .weak()
+                    .small(),
+                );
+                ui.horizontal(|ui| {
+                    ui.add_enabled_ui(app.installing.is_none(), |ui| {
+                        if ui
+                            .button(format!("{}  Update PawnIO", icons::ARROWS_CLOCKWISE))
+                            .on_hover_text("Windows will ask for admin permission")
+                            .clicked()
+                        {
+                            app.start_install("PawnIO", "upgrade", PAWNIO_ID);
+                        }
+                    });
+                    if ui.button("Use LibreHardwareMonitor instead").clicked() {
+                        app.settings.temp_source = "librehardwaremonitor".to_string();
+                        app.save_settings();
+                        app.set_status("heatlog will use LibreHardwareMonitor.");
+                    }
+                });
+            }
+        }
+
+        if let Some(newer) = update.as_deref() {
+            ui.add_space(4.0);
+            ui.label(
+                RichText::new(format!(
+                    "PawnIO {newer} is available{}.",
+                    version
+                        .as_deref()
+                        .map(|have| format!(", this PC has {have}"))
+                        .unwrap_or_default()
+                ))
+                .weak()
+                .small(),
+            );
+            if !matches!(state, PawnIo::Blocked(_)) {
+                ui.add_enabled_ui(app.installing.is_none(), |ui| {
+                    if ui
+                        .button(format!("{}  Update PawnIO", icons::ARROWS_CLOCKWISE))
+                        .on_hover_text("Windows will ask for admin permission")
+                        .clicked()
+                    {
+                        app.start_install("PawnIO", "upgrade", PAWNIO_ID);
+                    }
+                });
+            }
+        }
+    });
+}
+
 /// Installs through winget's official package, or falls back to HWiNFO's
 /// own download page. Runs in a visible console so the user can see the
 /// admin prompt and the progress.
 pub const HWINFO_DOWNLOAD: &str = "https://www.hwinfo.com/download/";
+/// Official packages. heatlog installs these through winget and never
+/// bundles either program.
+pub const HWINFO_ID: &str = "REALiX.HWiNFO";
+pub const PAWNIO_ID: &str = "namazso.PawnIO";
 
-/// Runs winget and reports what actually happened. winget's download can
-/// fail for reasons heatlog cannot fix (HWiNFO's site has answered 403),
-/// so the result is reported rather than assumed, with the official
-/// download page as the way out. No retrying.
-pub fn install_hwinfo() -> Result<(), String> {
+/// Runs winget and reports what actually happened. A download can fail
+/// for reasons heatlog cannot fix (HWiNFO's site has answered 403), so
+/// the result is reported rather than assumed, with the official download
+/// page as the way out. No retrying.
+///
+/// `action` is winget's own ("install" or "upgrade") and `id` is the
+/// official package. heatlog never ships these programs itself.
+pub fn winget(action: &str, id: &str) -> Result<(), String> {
     let output = std::process::Command::new("winget")
         .args([
-            "install",
+            action,
             "--id",
-            "REALiX.HWiNFO",
+            id,
             "-e",
             "--accept-package-agreements",
             "--accept-source-agreements",
@@ -924,7 +1118,7 @@ pub fn install_hwinfo() -> Result<(), String> {
             let line = line.trim();
             !line.is_empty() && !line.starts_with(['-', '\\', '|', '/', '█'])
         })
-        .unwrap_or("winget could not install HWiNFO")
+        .unwrap_or("winget could not finish")
         .trim()
         .to_string();
     Err(reason)
@@ -1378,9 +1572,71 @@ pub fn settings(ui: &mut egui::Ui, app: &mut App) -> Option<crate::Page> {
                     ui.label(RichText::new("No source found.").weak());
                 }
             }
+            ui.add_space(4.0);
+            ui.label(RichText::new("Read it from").weak().small());
+            for (value, label) in [
+                ("auto", "Whichever works best"),
+                ("pawnio", "PawnIO (needs heatlog as administrator)"),
+                ("librehardwaremonitor", "LibreHardwareMonitor"),
+                ("hwinfo", "HWiNFO"),
+            ] {
+                let mut picked = app.settings.temp_source.eq_ignore_ascii_case(value);
+                if ui.radio(picked, label).clicked() {
+                    picked = true;
+                }
+                if picked && !app.settings.temp_source.eq_ignore_ascii_case(value) {
+                    app.settings.temp_source = value.to_string();
+                }
+            }
+            ui.label(
+                RichText::new(
+                    "A named source is the only one heatlog tries, so it stays silent rather \
+                     than quietly using another one.",
+                )
+                .weak()
+                .small(),
+            );
+            ui.add_space(6.0);
             if ui.button("Open setup").clicked() {
                 nav = Some(crate::Page::TempSetup);
             }
+        });
+        ui.add_space(8.0);
+
+        card(ui, |ui| {
+            ui.label(RichText::new("PawnIO driver safety").strong());
+            ui.checkbox(
+                &mut app.settings.pawnio_safety_check,
+                "Check the PawnIO driver before reading hardware through it",
+            );
+            ui.label(
+                RichText::new(
+                    "Before using PawnIO, heatlog asks Windows whether the driver loaded at \
+                     all, looks for published advisories naming it, and checks heatlog's own \
+                     list of versions to avoid. Anything wrong, unknown or unreachable means \
+                     heatlog falls back to LibreHardwareMonitor or HWiNFO. Switching this off \
+                     means heatlog never uses PawnIO at all. It is not the update check: \
+                     turning updates off leaves this on.",
+                )
+                .weak()
+                .small(),
+            );
+            ui.add_space(4.0);
+            ui.add_enabled_ui(app.settings.pawnio_safety_check, |ui| {
+                ui.checkbox(
+                    &mut app.settings.pawnio_if_heatlog_unmaintained,
+                    "Keep using PawnIO even if heatlog stops being updated",
+                );
+            });
+            ui.label(
+                RichText::new(
+                    "heatlog stops using the driver if heatlog itself has had no release for \
+                     over a year, because an app nobody maintains cannot promise a kernel \
+                     driver is still safe.",
+                )
+                .weak()
+                .small(),
+            );
         });
         ui.add_space(10.0);
 
