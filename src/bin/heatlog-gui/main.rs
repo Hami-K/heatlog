@@ -581,6 +581,14 @@ impl eframe::App for App {
                             }
                             _ => "HWiNFO installed - start it and tick Shared Memory Support.",
                         });
+                        if app == Some("PawnIO") {
+                            // A different driver is installed now, so the
+                            // last safety verdict is about the wrong
+                            // version. Check the new one straight away
+                            // rather than at the next start-up.
+                            let cfg = heatlog::config::load_or_create().unwrap_or_default();
+                            heatlog::driver_safety::refresh_in_background(&cfg);
+                        }
                         self.send(worker::Cmd::Reprobe);
                     }
                     Err(reason) => {
