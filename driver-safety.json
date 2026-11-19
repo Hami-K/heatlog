@@ -1,0 +1,25 @@
+{
+  "_comment": [
+    "Which versions of the PawnIO kernel driver heatlog is willing to read",
+    "hardware through. heatlog fetches this file before it uses PawnIO, so a",
+    "version can be blocked without releasing a new heatlog. The URL is fixed:",
+    "https://raw.githubusercontent.com/Hami-K/heatlog/main/driver-safety.json",
+    "",
+    "format        - bump only for a breaking change. A heatlog that does not",
+    "                recognise the number stops using PawnIO rather than",
+    "                guessing, so adding fields keeps format 1.",
+    "minimum_safe  - the oldest PawnIO heatlog will talk to.",
+    "blocked       - exact versions to refuse, each with a reason shown to the",
+    "                user. '2.2.0' and '2.2.0.0' are the same version.",
+    "ignore_cves   - advisories that name PawnIO but do not apply, so one",
+    "                unrelated CVE cannot disable the feature for everyone.",
+    "",
+    "heatlog also refuses PawnIO when Windows will not load it, when the NVD",
+    "lists an advisory naming it, and when heatlog itself has had no release",
+    "for over a year. Those checks need no edits here."
+  ],
+  "format": 1,
+  "minimum_safe": "2.2.0",
+  "blocked": [],
+  "ignore_cves": []
+}
