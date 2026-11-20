@@ -53,9 +53,6 @@ colour itself shows how hot things are.
   possible causes for its slow moments, charts with point-snapping
   tooltips, technical details, and an Export HTML button
 
-![The Recordings page: past sessions with their date, length, a usage
-sparkline and a verdict pill](docs/recordings.png)
-
 ## Command line
 
 ```
@@ -98,10 +95,6 @@ reports the most about it:
   interfaces: the performance counters behind Task Manager's GPU tab for
   utilisation and memory, and the kernel-mode thunk interface for the adapter
   itself. No driver, no admin rights.
-
-![The GPU page for an integrated Intel GPU: utilisation and shared memory
-are shown, while temperature and throttling read "not
-reported"](docs/gpu.png)
 
 What the second route cannot do is worth stating plainly: Windows exposes no
 clock speed, no power draw and **no throttle signal** for these GPUs, and
@@ -169,9 +162,6 @@ usually does report them. heatlog takes the temperature from the first
 source that has one and the fan speeds from whichever source has those,
 even if that is the other app. When neither does, the CPU page says so
 instead of showing nothing.
-
-![The CPU page: usage graph, clock speed, and a temperature read through
-PawnIO](docs/cpu.png)
 
 You can pin one source in Settings (or `temp_source` in the config file):
 `auto` uses the best one available, or name `pawnio`,
